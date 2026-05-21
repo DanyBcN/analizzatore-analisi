@@ -1,0 +1,39 @@
+analita,alias,unita,sesso,min,max,note
+Glicemia,glicemia|glucosio|glucose,mg/dL,ALL,70,99,Digiuno: 100-125 alterata glicemia a digiuno; >=126 da confermare
+HbA1c,hba1c|emoglobina glicata|glicata,%,ALL,4,5.6,5.7-6.4 prediabete; >=6.5 diabete se confermato
+Insulina,insulina|insulin,µU/mL,ALL,2,15,Valore da interpretare con glicemia e HOMA-IR; range indicativo
+Colesterolo totale,colesterolo totale|cholesterol total|colesterolo,mg/dL,ALL,0,200,Interpretare con rischio cardiovascolare globale
+LDL,ldl|colesterolo ldl,mg/dL,ALL,0,116,Target variabile in base al rischio cardiovascolare
+HDL,hdl|colesterolo hdl,mg/dL,M,40,999,Valore basso se sotto cut-off
+HDL,hdl|colesterolo hdl,mg/dL,F,50,999,Valore basso se sotto cut-off
+Trigliceridi,trigliceridi|triglycerides,mg/dL,ALL,0,150,Digiuno/non digiuno cambia interpretazione
+Creatinina,creatinina|creatinine,mg/dL,ALL,0.6,1.2,Valutare con eGFR massa muscolare età e sesso
+eGFR,egfr|filtrato glomerulare|gfr|velocità filtrazione glomerulare,mL/min/1.73m2,ALL,90,999,<60 se persistente merita approfondimento medico
+AST,ast|got|transaminasi got,U/L,ALL,0,35,Da adattare al laboratorio
+ALT,alt|gpt|transaminasi gpt,U/L,ALL,0,45,Da adattare al laboratorio
+Gamma-GT,gamma gt|ggt|gamma-glutamiltransferasi,U/L,ALL,0,55,Da adattare a sesso e laboratorio
+Ferritina,ferritina|ferritin,ng/mL,ALL,30,300,Interpretare con emocromo sideremia transferrina PCR
+Sideremia,sideremia|ferro sierico|iron,µg/dL,ALL,60,170,Interpretare con ferritina transferrina saturazione e PCR
+Transferrina,transferrina|transferrin,mg/dL,ALL,200,360,Interpretare nel metabolismo marziale
+Vitamina D,vitamina d|25-oh vitamina d|25 oh d|25(oh)d,ng/mL,ALL,30,100,Cut-off dibattuti; contestualizzare
+Vitamina B12,vitamina b12|b12|cobalamina,pg/mL,ALL,200,900,Interpretare con emocromo omocisteina folati quadro clinico
+Folati,folati|acido folico|folate,ng/mL,ALL,3,17,Interpretare con B12 ed emocromo
+TSH,tsh|tireotropina,mIU/L,ALL,0.4,4.0,Dipende da età gravidanza farmaci e laboratorio
+FT3,ft3|triiodotironina libera,pg/mL,ALL,2,4.4,Da adattare al laboratorio
+FT4,ft4|tiroxina libera,ng/dL,ALL,0.8,1.8,Da adattare al laboratorio
+PCR,pcr|proteina c reattiva|crp,mg/L,ALL,0,5,Marker aspecifico di infiammazione
+VES,ves|velocità eritrosedimentazione,mm/h,ALL,0,20,Aspecifica; dipende da sesso età infiammazione anemia
+Uricemia,uricemia|acido urico,mg/dL,M,3.5,7.2,Interpretare con dieta funzione renale farmaci e quadro clinico
+Uricemia,uricemia|acido urico,mg/dL,F,2.6,6.0,Interpretare con dieta funzione renale farmaci e quadro clinico
+Sodio,sodio|na|natremia,mmol/L,ALL,135,145,Elettrolita; alterazioni importanti richiedono valutazione medica
+Potassio,potassio|k|kaliemia,mmol/L,ALL,3.5,5.1,Elettrolita; alterazioni importanti richiedono valutazione medica
+Globuli bianchi,globuli bianchi|leucociti|wbc,10^3/uL,ALL,4,10,Da adattare al laboratorio
+Globuli rossi,globuli rossi|eritrociti|rbc,10^6/uL,ALL,4.2,5.9,Da adattare per sesso e laboratorio
+Emoglobina,emoglobina|hb|hgb,g/dL,M,13.5,17.5,Range adulto maschio indicativo
+Emoglobina,emoglobina|hb|hgb,g/dL,F,12,16,Range adulto femmina indicativo
+Ematocrito,ematocrito|hct|ht,%,M,40,52,Range adulto maschio indicativo
+Ematocrito,ematocrito|hct|ht,%,F,36,46,Range adulto femmina indicativo
+MCV,mcv|volume corpuscolare medio,fL,ALL,80,100,Da interpretare con emocromo ferro B12 folati
+MCH,mch|contenuto emoglobinico medio,pg,ALL,27,33,Da interpretare con MCV e MCHC
+MCHC,mchc|concentrazione emoglobinica media,g/dL,ALL,32,36,Da interpretare con emocromo
+Piastrine,piastrine|plt,10^3/uL,ALL,150,400,Da adattare al laboratorio
