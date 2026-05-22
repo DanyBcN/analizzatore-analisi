@@ -1,27 +1,3 @@
-# Analizzatore Analisi - Versione A
+# Analizzatore Analisi - Versione 2
 
-App Streamlit per leggere referti ematochimici in PDF testuale o testo incollato.
-
-## Caratteristiche
-
-- Nessun archivio pazienti
-- Nessun salvataggio PDF da parte dell'app
-- Estrazione valori da PDF/testo
-- Confronto con range modificabili in `range_laboratorio.csv`
-- Report scaricabile TXT
-- Tabella scaricabile CSV
-
-## File principale
-
-`app.py`
-
-## Avvio locale
-
-```bash
-pip install -r requirements.txt
-streamlit run app.py
-```
-
-## Deploy online
-
-Caricare questi file in una repository GitHub e collegare la repository a Streamlit Community Cloud.
+Grafica migliorata, sintesi scritta e report scaricabile.
