@@ -370,33 +370,67 @@ def delta(v1, v2, unit: str) -> str:
 
 
 def build_report_table(df: pd.DataFrame, dates: List[str]) -> pd.DataFrame:
+    """Costruisce la tabella finale.
+    Nota: la colonna Nota viene compilata SOLO per gli esami fuori range.
+    La colonna _status serve solo per colorare le righe fuori range nell'anteprima HTML.
+    """
     if df.empty:
-        return pd.DataFrame(columns=["_group", "Esame richiesto", "U.M", "Data 1", "Data 2", "Differenza", "Valori di Riferimento", "Nota"])
+        return pd.DataFrame(columns=["_group", "_status", "Esame richiesto", "U.M", "Data 1", "Data 2", "Differenza", "Valori di Riferimento", "Nota"])
     dates = dates[:2]
     pivot = df.pivot_table(index="Analita", columns="Data", values="Valore", aggfunc="first")
     meta = df.drop_duplicates("Analita").set_index("Analita")
     out = []
     used = set()
+
+    def row_status(n: str) -> str:
+        if n not in meta.index:
+            return ""
+        status = str(meta.loc[n, "Stato"]).upper().strip()
+        return status if status in ["ALTO", "BASSO"] else ""
+
+    def row_note(n: str) -> str:
+        status = row_status(n)
+        if not status:
+            return ""
+        base = str(meta.loc[n, "Nota"]) if n in meta.index else ""
+        return f"{status}. {base}".strip()
+
     for group, names in GROUPS.items():
         present = [n for n in names if n in pivot.index]
-        # mostra sempre i macro-gruppi principali, ma le righe solo se presenti
-        out.append({"_group": True, "Esame richiesto": group, "U.M":"", "Data 1":"", "Data 2":"", "Differenza":"", "Valori di Riferimento":"", "Nota":""})
+        out.append({"_group": True, "_status": "", "Esame richiesto": group, "U.M":"", "Data 1":"", "Data 2":"", "Differenza":"", "Valori di Riferimento":"", "Nota":""})
         for n in present:
             used.add(n)
             v1 = pivot.loc[n, dates[0]] if len(dates) > 0 and dates[0] in pivot.columns else ""
             v2 = pivot.loc[n, dates[1]] if len(dates) > 1 and dates[1] in pivot.columns else ""
             unit = meta.loc[n, "UM"] if n in meta.index else ""
-            stt = ""
-            if n in meta.index and str(meta.loc[n, "Stato"]) in ["ALTO", "BASSO"]:
-                stt = f" Attenzione: {meta.loc[n, 'Stato']}."
-            out.append({"_group": False, "Esame richiesto": n, "U.M": unit, "Data 1": fmt_value(v1), "Data 2": fmt_value(v2), "Differenza": delta(fmt_value(v1), fmt_value(v2), unit), "Valori di Riferimento": meta.loc[n, "Valori di riferimento"], "Nota": str(meta.loc[n, "Nota"]) + stt})
+            out.append({
+                "_group": False,
+                "_status": row_status(n),
+                "Esame richiesto": n,
+                "U.M": unit,
+                "Data 1": fmt_value(v1),
+                "Data 2": fmt_value(v2),
+                "Differenza": delta(fmt_value(v1), fmt_value(v2), unit),
+                "Valori di Riferimento": meta.loc[n, "Valori di riferimento"],
+                "Nota": row_note(n),
+            })
+
     for n in [x for x in pivot.index if x not in used]:
         v1 = pivot.loc[n, dates[0]] if len(dates) > 0 and dates[0] in pivot.columns else ""
         v2 = pivot.loc[n, dates[1]] if len(dates) > 1 and dates[1] in pivot.columns else ""
         unit = meta.loc[n, "UM"] if n in meta.index else ""
-        out.append({"_group": False, "Esame richiesto": n, "U.M": unit, "Data 1": fmt_value(v1), "Data 2": fmt_value(v2), "Differenza": delta(fmt_value(v1), fmt_value(v2), unit), "Valori di Riferimento": meta.loc[n, "Valori di riferimento"], "Nota": meta.loc[n, "Nota"]})
+        out.append({
+            "_group": False,
+            "_status": row_status(n),
+            "Esame richiesto": n,
+            "U.M": unit,
+            "Data 1": fmt_value(v1),
+            "Data 2": fmt_value(v2),
+            "Differenza": delta(fmt_value(v1), fmt_value(v2), unit),
+            "Valori di Riferimento": meta.loc[n, "Valori di riferimento"],
+            "Nota": row_note(n),
+        })
     return pd.DataFrame(out)
-
 
 def report_html(report_df: pd.DataFrame, patient: str, report_date: str, logo_data_url: Optional[str], d1: str, d2: str) -> str:
     logo = f'<img src="{logo_data_url}" class="logo">' if logo_data_url else '<div class="logo-placeholder">DB<br><span>Nutrition and Performance</span></div>'
@@ -405,7 +439,8 @@ def report_html(report_df: pd.DataFrame, patient: str, report_date: str, logo_da
         if r.get("_group"):
             rows.append(f'<tr class="group"><td colspan="7"><b>{r["Esame richiesto"]}</b></td></tr>')
         else:
-            rows.append("<tr>" + "".join([
+            row_class = " abnormal" if str(r.get("_status", "")).upper() in ["ALTO", "BASSO"] else ""
+            rows.append(f'<tr class="{row_class.strip()}">' + "".join([
                 f'<td class="exam">{r["Esame richiesto"]}</td>',
                 f'<td>{r["U.M"]}</td>',
                 f'<td>{r["Data 1"]}</td>',
@@ -428,6 +463,8 @@ table.referto {{width:100%; border-collapse:collapse; table-layout:fixed; font-s
 table.referto th, table.referto td {{border:1px solid #111; padding:4px 7px; vertical-align:middle; word-wrap:break-word;}}
 table.referto th {{font-style:italic; font-weight:400; text-align:center;}}
 table.referto .group td {{background:#f1f1f1; font-weight:700; text-align:left; padding:4px 8px;}}
+table.referto tr.abnormal td {{color:#b00000; font-weight:700;}}
+table.referto tr.abnormal td.note {{font-weight:600;}}
 table.referto td {{height:21px;}}
 table.referto td:not(.exam):not(.note) {{text-align:center;}}
 .exam {{padding-left:22px !important;}}
@@ -469,7 +506,7 @@ def data_url_from_upload(file) -> Optional[str]:
 # INTERFACCIA STREAMLIT
 # ----------------------------
 st.title("Referto comparativo analisi - layout DB")
-st.caption("Versione corretta: lettura per coordinate del PDF, non solo regex sul testo. Evita di confondere data di nascita e data referto.")
+st.caption("Versione corretta: lettura per coordinate del PDF; note solo sui valori fuori range e righe fuori range in rosso.")
 
 with st.sidebar:
     st.header("Dati referto")
@@ -507,7 +544,16 @@ if all_dfs:
     st.download_button("Scarica HTML stampabile", html.encode("utf-8"), "referto_comparativo.html", "text/html")
 
     st.subheader("Valori estratti")
-    st.dataframe(full_df, use_container_width=True, hide_index=True)
+    display_df = full_df.copy()
+    display_df["Nota"] = display_df.apply(lambda r: r["Nota"] if str(r.get("Stato", "")).upper() in ["ALTO", "BASSO"] else "", axis=1)
+
+    def evidenzia_fuori_range(row):
+        stato = str(row.get("Stato", "")).upper()
+        if stato in ["ALTO", "BASSO"]:
+            return ["color: #b00000; font-weight: 700;" for _ in row]
+        return ["" for _ in row]
+
+    st.dataframe(display_df.style.apply(evidenzia_fuori_range, axis=1), use_container_width=True, hide_index=True)
     with st.expander("Tabella modificabile / controllo dati"):
         edited = st.data_editor(full_df, use_container_width=True, num_rows="dynamic", hide_index=True)
         if st.button("Rigenera anteprima con tabella modificata"):
