@@ -627,7 +627,7 @@ def data_url_from_upload(file) -> Optional[str]:
 # ----------------------------
 # INTERFACCIA STREAMLIT
 # ----------------------------
-st.title("Referto comparativo analisi - layout DB")
+st.title("TEST AGGIORNAMENTO APP")
 st.caption("Versione app.py: colonne dinamiche, PDF scaricabile, note solo sui fuori range e righe rosse.")
 
 with st.sidebar:
