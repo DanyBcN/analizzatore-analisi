@@ -74,6 +74,17 @@ ALIASES: Dict[str, str] = {
     "colore": "Colore urine", "aspetto": "Aspetto urine", "ph": "pH urine", "proteine": "Proteine urine", "bilirubina": "Bilirubina urine", "urobilinogeno": "Urobilinogeno urine", "emoglobina": "Emoglobina urine", "corpi chetonici": "Corpi chetonici urine", "leucociti": "Leucociti urine", "nitriti": "Nitriti urine", "peso specifico": "Peso specifico urine",
 }
 
+
+DEFAULT_REFS = {
+    # Il laboratorio nel PDF di prova non riporta un range chiaro per il peso specifico urinario.
+    # Range operativo usato per evidenziare urine concentrate. Modificabile in base al laboratorio.
+    "Peso specifico urine": "1,005 - 1,030",
+}
+
+DEFAULT_UNITS = {
+    "Peso specifico urine": "",
+}
+
 NOTES = {
     "WBC-Globuli Bianchi": "Leucociti: difesa immunitaria; valutare con formula leucocitaria.",
     "RBC-Globuli Rossi": "Eritrociti: da leggere con Hb, HCT e indici eritrocitari.",
@@ -96,7 +107,7 @@ NOTES = {
     "Trigliceridi": "Trigliceridi: influenzati da dieta, alcol, peso, digiuno e metabolismo glucidico.",
     "TSH-R": "TSH: marker ipofisario della funzione tiroidea; contestualizzare con FT3/FT4 e terapia.",
     "pH urine": "pH urinario: dipende da dieta, idratazione e condizioni metaboliche.",
-    "Peso specifico urine": "Peso specifico: indicatore della concentrazione urinaria/idratazione.",
+    "Peso specifico urine": "Peso specifico urinario alto: urine concentrate; valutare idratazione, perdite di liquidi, sudorazione, dieta e quadro clinico.",
 }
 
 IGNORE_NAMES = {"esame richiesto", "risultato", "u.m.", "valori di riferimento", "metodica", "siero", "formula leucocitaria strumentale", "valori percentuali", "valori assolu", "urine: chimico fisico e microscopico", "es. microscopico del sedimento"}
@@ -286,6 +297,12 @@ def extract_pdf_structured(data: bytes, filename: str) -> Tuple[pd.DataFrame, st
 def make_row(analita, date, value, unit, ref, original, page):
     unit = clean(unit)
     ref = clean(ref).replace("[", "").replace("]", "").replace("(", "").replace(")", "")
+    # Se il PDF non porta un riferimento utilizzabile, applica un range operativo interno.
+    # Serve soprattutto per il peso specifico urinario, che nel PDF di prova compare senza range leggibile.
+    if analita in DEFAULT_REFS and (not ref or ref.strip() in {"", "O· O", "0- 0", "0 - 0"}):
+        ref = DEFAULT_REFS[analita]
+    if analita in DEFAULT_UNITS and not unit:
+        unit = DEFAULT_UNITS[analita]
     # sistemazioni unità frequenti OCR/PDF
     unit = unit.replace("mg/dl", "mg/dL").replace("µg/dl", "µg/dL").replace("K/µI", "K/µL").replace("M/µI", "M/µL")
     stato = stato_from_ref(value, ref)
@@ -506,7 +523,7 @@ def data_url_from_upload(file) -> Optional[str]:
 # INTERFACCIA STREAMLIT
 # ----------------------------
 st.title("Referto comparativo analisi - layout DB")
-st.caption("Versione corretta: lettura per coordinate del PDF; note solo sui valori fuori range e righe fuori range in rosso.")
+st.caption("Versione corretta v4: note solo sui fuori range, righe rosse e range operativo per peso specifico urine.")
 
 with st.sidebar:
     st.header("Dati referto")
