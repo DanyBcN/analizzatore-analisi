@@ -536,7 +536,7 @@ def make_pdf(report_df: pd.DataFrame, patient: str, report_date: str, logo_bytes
 
     table = Table(data, colWidths=widths, repeatRows=1)
     ts = [
-        ("LINEBELOW", (0,0), (-1,0), 0.5, colors.black)
+        ("GRID", (0,0), (-1,-1), 0.45, colors.black),
         ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
         ("ALIGN", (0,0), (-1,0), "CENTER"),
         ("BACKGROUND", (0,0), (-1,0), colors.white),
