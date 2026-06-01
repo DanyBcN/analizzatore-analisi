@@ -389,6 +389,72 @@ def make_pdf(report_df: pd.DataFrame, patient: str, report_date: str, logo_file,
     return buffer.getvalue()
 
 
+
+
+def render_like_example(report_df: pd.DataFrame, patient: str, report_date: str, doctor_block: str, logo_file=None):
+    """Anteprima HTML molto simile allo schema inviato."""
+    import base64
+    logo_html = '<div class="db-logo-text">DB<br><span>BIOLOGO NUTRIZIONISTA</span></div>'
+    if logo_file is not None:
+        try:
+            raw = logo_file.getvalue()
+            b64 = base64.b64encode(raw).decode('ascii')
+            logo_html = f'<img class="db-logo-img" src="data:image/png;base64,{b64}">' 
+        except Exception:
+            pass
+    lines = [x.strip() for x in doctor_block.splitlines() if x.strip()]
+    if lines:
+        lines[0] = f"<b>{lines[0]}</b>"
+    doctor_html = "<br>".join(lines)
+    rows_html = ""
+    for _, r in report_df.iterrows():
+        if bool(r.get("_group", False)):
+            rows_html += f'<tr class="group"><td colspan="7"><b>{r.get("Esame richiesto", "")}</b></td></tr>'
+        else:
+            rows_html += "<tr>" + "".join([
+                f'<td class="exam">{r.get("Esame richiesto", "")}</td>',
+                f'<td>{r.get("U.M", "")}</td>',
+                f'<td>{r.get("Data 1", "")}</td>',
+                f'<td>{r.get("Data 2", "")}</td>',
+                f'<td>{r.get("Differenza", "")}</td>',
+                f'<td>{r.get("Valori di Riferimento", "")}</td>',
+                f'<td class="note">{r.get("Nota", "")}</td>',
+            ]) + "</tr>"
+    html = f"""
+    <style>
+      .sheet {{background:white; padding:28px 34px 40px 34px; border:1px solid #ddd; width:100%; max-width:1180px; color:#111; font-family:Arial, Helvetica, sans-serif;}}
+      .head {{display:grid; grid-template-columns:245px 1fr 145px; align-items:start; column-gap:16px;}}
+      .db-logo-img {{max-width:235px; max-height:155px; object-fit:contain;}}
+      .db-logo-text {{font-size:86px; font-weight:900; line-height:.72; letter-spacing:-8px; border-bottom:1px solid #8ab4ff; width:230px;}}
+      .db-logo-text span {{font-size:18px; font-weight:500; letter-spacing:0; display:block; margin-top:8px;}}
+      .doctor {{border-left:2px solid #8ab4ff; padding-left:8px; font-size:14px; line-height:1.55; color:#333;}}
+      .report-date {{font-size:14px; text-align:right; padding-top:170px;}}
+      .patient {{margin-top:18px; margin-bottom:14px; font-size:14px;}}
+      table.referto {{border-collapse:collapse; width:100%; table-layout:fixed; font-size:13px;}}
+      table.referto th, table.referto td {{border:1px solid #111; padding:2px 7px; height:18px; vertical-align:middle;}}
+      table.referto th {{font-style:italic; font-weight:400; text-align:center;}}
+      table.referto td {{text-align:center;}}
+      table.referto td.exam {{text-align:left; padding-left:55px;}}
+      table.referto tr.group td {{text-align:left; padding-left:8px; background:#f7f7f7;}}
+      table.referto td.note {{text-align:left; font-size:11px;}}
+      .c1{{width:22%;}} .c2{{width:8%;}} .c3{{width:9%;}} .c4{{width:13%;}} .c5{{width:13%;}} .c6{{width:13%;}} .c7{{width:22%;}}
+    </style>
+    <div class="sheet">
+      <div class="head">
+        <div>{logo_html}</div>
+        <div class="doctor">{doctor_html}</div>
+        <div class="report-date">{report_date}</div>
+      </div>
+      <div class="patient">Sig. {patient}</div>
+      <table class="referto">
+        <colgroup><col class="c1"><col class="c2"><col class="c3"><col class="c4"><col class="c5"><col class="c6"><col class="c7"></colgroup>
+        <thead><tr><th>Esame richiesto</th><th>U.M</th><th>Data 1</th><th>Data 2</th><th>Differenza</th><th>Valori di<br>Riferimento</th><th>Nota</th></tr></thead>
+        <tbody>{rows_html}</tbody>
+      </table>
+    </div>
+    """
+    st.components.v1.html(html, height=760, scrolling=True)
+
 st.markdown('<div class="main-title">Referto comparativo analisi ematochimiche</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub">Carica uno o più PDF/immagini: l\'app riconosce data, analiti, valori, unità, range, differenza tra due referti e genera una tabella in stile professionale.</div>', unsafe_allow_html=True)
 
@@ -426,8 +492,10 @@ if all_rows:
     if not raw_df.empty and selected_dates:
         comparison = build_comparison(raw_df, selected_dates)
         visible = comparison.drop(columns=["_group"], errors="ignore")
-        st.subheader("Schema comparativo")
-        st.dataframe(visible, use_container_width=True, hide_index=True)
+        st.subheader("Anteprima come il tuo schema")
+        render_like_example(comparison, patient, report_date, doctor_block, logo)
+        with st.expander("Tabella modificabile / controllo dati"):
+            st.dataframe(visible, use_container_width=True, hide_index=True)
         st.subheader("Valori estratti")
         st.dataframe(raw_df[["Analita", "Data", "Valore", "UM", "Valori di riferimento", "Stato", "Nota", "Riga originale"]], use_container_width=True, hide_index=True)
         csv = visible.to_csv(index=False).encode("utf-8")
