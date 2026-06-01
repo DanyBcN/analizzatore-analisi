@@ -23,6 +23,18 @@ try:
 except Exception:
     pytesseract = None
 
+try:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+except Exception:
+    colors = None
+    A4 = landscape = mm = None
+    SimpleDocTemplate = Table = TableStyle = Paragraph = Spacer = RLImage = None
+    getSampleStyleSheet = ParagraphStyle = None
+
 st.set_page_config(page_title="Referto comparativo analisi", page_icon="🧪", layout="wide")
 
 # ----------------------------
@@ -387,13 +399,21 @@ def delta(v1, v2, unit: str) -> str:
 
 
 def build_report_table(df: pd.DataFrame, dates: List[str]) -> pd.DataFrame:
-    """Costruisce la tabella finale.
-    Nota: la colonna Nota viene compilata SOLO per gli esami fuori range.
-    La colonna _status serve solo per colorare le righe fuori range nell'anteprima HTML.
+    """Costruisce la tabella finale con colonne dinamiche.
+    - 1 sola data: niente Data 2 e niente Differenza.
+    - 2+ date: una colonna per ogni data e differenze consecutive.
+    - Nota solo per esami ALTO/BASSO.
     """
+    dates = list(dates)
+    base_cols = ["_group", "_status", "Esame richiesto", "U.M"]
+    date_cols = dates if dates else ["Data 1"]
+    diff_cols = [f"Diff. {i+1}-{i}" for i in range(1, len(dates))]
+    end_cols = ["Valori di Riferimento", "Nota"]
+    cols = base_cols + date_cols + diff_cols + end_cols
+
     if df.empty:
-        return pd.DataFrame(columns=["_group", "_status", "Esame richiesto", "U.M", "Data 1", "Data 2", "Differenza", "Valori di Riferimento", "Nota"])
-    dates = dates[:2]
+        return pd.DataFrame(columns=cols)
+
     pivot = df.pivot_table(index="Analita", columns="Data", values="Valore", aggfunc="first")
     meta = df.drop_duplicates("Analita").set_index("Analita")
     out = []
@@ -412,60 +432,152 @@ def build_report_table(df: pd.DataFrame, dates: List[str]) -> pd.DataFrame:
         base = str(meta.loc[n, "Nota"]) if n in meta.index else ""
         return f"{status}. {base}".strip()
 
-    for group, names in GROUPS.items():
-        present = [n for n in names if n in pivot.index]
-        out.append({"_group": True, "_status": "", "Esame richiesto": group, "U.M":"", "Data 1":"", "Data 2":"", "Differenza":"", "Valori di Riferimento":"", "Nota":""})
-        for n in present:
-            used.add(n)
-            v1 = pivot.loc[n, dates[0]] if len(dates) > 0 and dates[0] in pivot.columns else ""
-            v2 = pivot.loc[n, dates[1]] if len(dates) > 1 and dates[1] in pivot.columns else ""
-            unit = meta.loc[n, "UM"] if n in meta.index else ""
-            out.append({
-                "_group": False,
-                "_status": row_status(n),
-                "Esame richiesto": n,
-                "U.M": unit,
-                "Data 1": fmt_value(v1),
-                "Data 2": fmt_value(v2),
-                "Differenza": delta(fmt_value(v1), fmt_value(v2), unit),
-                "Valori di Riferimento": meta.loc[n, "Valori di riferimento"],
-                "Nota": row_note(n),
-            })
+    def make_empty_group(group: str) -> dict:
+        row = {c: "" for c in cols}
+        row["_group"] = True
+        row["Esame richiesto"] = group
+        return row
 
-    for n in [x for x in pivot.index if x not in used]:
-        v1 = pivot.loc[n, dates[0]] if len(dates) > 0 and dates[0] in pivot.columns else ""
-        v2 = pivot.loc[n, dates[1]] if len(dates) > 1 and dates[1] in pivot.columns else ""
+    def make_value_row(n: str) -> dict:
         unit = meta.loc[n, "UM"] if n in meta.index else ""
-        out.append({
+        row = {c: "" for c in cols}
+        row.update({
             "_group": False,
             "_status": row_status(n),
             "Esame richiesto": n,
             "U.M": unit,
-            "Data 1": fmt_value(v1),
-            "Data 2": fmt_value(v2),
-            "Differenza": delta(fmt_value(v1), fmt_value(v2), unit),
-            "Valori di Riferimento": meta.loc[n, "Valori di riferimento"],
+            "Valori di Riferimento": meta.loc[n, "Valori di riferimento"] if n in meta.index else "",
             "Nota": row_note(n),
         })
-    return pd.DataFrame(out)
+        vals = []
+        for d in dates:
+            v = pivot.loc[n, d] if d in pivot.columns else ""
+            fv = fmt_value(v)
+            row[d] = fv
+            vals.append(fv)
+        for i in range(1, len(dates)):
+            row[f"Diff. {i+1}-{i}"] = delta(vals[i-1], vals[i], unit)
+        return row
 
-def report_html(report_df: pd.DataFrame, patient: str, report_date: str, logo_data_url: Optional[str], d1: str, d2: str) -> str:
+    for group, names in GROUPS.items():
+        present = [n for n in names if n in pivot.index]
+        if not present:
+            continue
+        out.append(make_empty_group(group))
+        for n in present:
+            used.add(n)
+            out.append(make_value_row(n))
+
+    leftovers = [x for x in pivot.index if x not in used]
+    if leftovers:
+        out.append(make_empty_group("Altri esami"))
+        for n in leftovers:
+            out.append(make_value_row(n))
+
+    return pd.DataFrame(out, columns=cols)
+
+
+def visible_report_columns(report_df: pd.DataFrame) -> List[str]:
+    return [c for c in report_df.columns if not c.startswith("_")]
+
+
+def make_pdf(report_df: pd.DataFrame, patient: str, report_date: str, logo_bytes: Optional[bytes]) -> Optional[bytes]:
+    if SimpleDocTemplate is None:
+        return None
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=landscape(A4),
+        leftMargin=10*mm, rightMargin=10*mm, topMargin=10*mm, bottomMargin=10*mm
+    )
+    styles = getSampleStyleSheet()
+    normal = ParagraphStyle("normal_small", parent=styles["Normal"], fontName="Helvetica", fontSize=7, leading=8)
+    normal_center = ParagraphStyle("normal_center", parent=normal, alignment=1)
+    bold = ParagraphStyle("bold_small", parent=normal, fontName="Helvetica-Bold")
+    italic = ParagraphStyle("italic", parent=normal_center, fontName="Helvetica-Oblique")
+    doctor = ParagraphStyle("doctor", parent=styles["Normal"], fontSize=8.5, leading=11)
+
+    elems = []
+    if logo_bytes:
+        img_buf = io.BytesIO(logo_bytes)
+        logo = RLImage(img_buf, width=52*mm, height=35*mm)
+    else:
+        logo = Paragraph("<b>DB</b><br/>NUTRITION AND PERFORMANCE", styles["Title"])
+
+    doctor_txt = DOCTOR_BLOCK.replace("<br>", "<br/>")
+    header = Table([[logo, Paragraph(doctor_txt, doctor), Paragraph(report_date, doctor)]], colWidths=[58*mm, 130*mm, 70*mm])
+    header.setStyle(TableStyle([
+        ("VALIGN", (0,0), (-1,-1), "TOP"),
+        ("LINEBEFORE", (1,0), (1,0), 1, colors.HexColor("#6aa0ff")),
+        ("LEFTPADDING", (1,0), (1,0), 7),
+        ("ALIGN", (2,0), (2,0), "RIGHT"),
+    ]))
+    elems += [header, Spacer(1, 8*mm), Paragraph(f"Sig. {patient}", styles["Normal"]), Spacer(1, 4*mm)]
+
+    visible_cols = visible_report_columns(report_df)
+    data = [[Paragraph(str(c).replace("Valori di Riferimento", "Valori di<br/>Riferimento"), italic) for c in visible_cols]]
+    row_statuses = []
+    for _, r in report_df.iterrows():
+        row_statuses.append((bool(r.get("_group")), str(r.get("_status", "")).upper()))
+        row = []
+        for c in visible_cols:
+            style = bold if bool(r.get("_group")) else (normal if c in ["Esame richiesto", "Nota"] else normal_center)
+            row.append(Paragraph(str(r.get(c, "") or ""), style))
+        data.append(row)
+
+    n_dates = max(1, len([c for c in visible_cols if re.match(r"\d{2}/\d{2}/\d{4}", str(c))]))
+    n_diffs = len([c for c in visible_cols if str(c).startswith("Diff.")])
+    # larghezze compatte in base al numero colonne
+    if len(visible_cols) <= 5:
+        widths = [62*mm, 22*mm, 28*mm, 42*mm, 104*mm]
+    else:
+        remaining = 267*mm - 54*mm - 18*mm - 40*mm - 48*mm
+        date_w = max(18*mm, min(26*mm, remaining / max(1, n_dates + n_diffs)))
+        widths = [54*mm, 18*mm] + [date_w]*(n_dates+n_diffs) + [40*mm, 48*mm]
+
+    table = Table(data, colWidths=widths, repeatRows=1)
+    ts = [
+        ("GRID", (0,0), (-1,-1), 0.45, colors.black),
+        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+        ("ALIGN", (0,0), (-1,0), "CENTER"),
+        ("BACKGROUND", (0,0), (-1,0), colors.white),
+        ("FONTSIZE", (0,0), (-1,-1), 7),
+    ]
+    for idx, (is_group, status) in enumerate(row_statuses, start=1):
+        if is_group:
+            ts += [("SPAN", (0,idx), (-1,idx)), ("BACKGROUND", (0,idx), (-1,idx), colors.HexColor("#f1f1f1")), ("FONTNAME", (0,idx), (-1,idx), "Helvetica-Bold")]
+        elif status in ["ALTO", "BASSO"]:
+            ts += [("TEXTCOLOR", (0,idx), (-1,idx), colors.HexColor("#b00000")), ("FONTNAME", (0,idx), (-1,idx), "Helvetica-Bold")]
+    table.setStyle(TableStyle(ts))
+    elems.append(table)
+    doc.build(elems)
+    buffer.seek(0)
+    return buffer.read()
+
+
+def report_html(report_df: pd.DataFrame, patient: str, report_date: str, logo_data_url: Optional[str]) -> str:
     logo = f'<img src="{logo_data_url}" class="logo">' if logo_data_url else '<div class="logo-placeholder">DB<br><span>Nutrition and Performance</span></div>'
+    visible_cols = visible_report_columns(report_df)
+    col_count = len(visible_cols)
     rows = []
     for _, r in report_df.iterrows():
         if r.get("_group"):
-            rows.append(f'<tr class="group"><td colspan="7"><b>{r["Esame richiesto"]}</b></td></tr>')
+            rows.append(f'<tr class="group"><td colspan="{col_count}"><b>{r["Esame richiesto"]}</b></td></tr>')
         else:
             row_class = " abnormal" if str(r.get("_status", "")).upper() in ["ALTO", "BASSO"] else ""
-            rows.append(f'<tr class="{row_class.strip()}">' + "".join([
-                f'<td class="exam">{r["Esame richiesto"]}</td>',
-                f'<td>{r["U.M"]}</td>',
-                f'<td>{r["Data 1"]}</td>',
-                f'<td>{r["Data 2"]}</td>',
-                f'<td>{r["Differenza"]}</td>',
-                f'<td>{r["Valori di Riferimento"]}</td>',
-                f'<td class="note">{r["Nota"]}</td>',
-            ]) + "</tr>")
+            cells = []
+            for c in visible_cols:
+                cls = "exam" if c == "Esame richiesto" else ("note" if c == "Nota" else "")
+                cells.append(f'<td class="{cls}">{r.get(c, "")}</td>')
+            rows.append(f'<tr class="{row_class.strip()}">' + "".join(cells) + "</tr>")
+    col_widths = []
+    for c in visible_cols:
+        if c == "Esame richiesto": col_widths.append('22%')
+        elif c == "U.M": col_widths.append('8%')
+        elif c == "Nota": col_widths.append('22%')
+        elif c == "Valori di Riferimento": col_widths.append('13%')
+        else: col_widths.append('10%')
+    colgroup = "".join([f'<col style="width:{w}">' for w in col_widths])
+    headers = "".join([f'<th>{str(c).replace("Valori di Riferimento", "Valori di<br>Riferimento")}</th>' for c in visible_cols])
     return f"""
 <style>
 .report-sheet {{background:white; color:#000; width:1180px; padding:24px 34px 38px 34px; border:1px solid #ddd; font-family:Arial, Helvetica, sans-serif;}}
@@ -486,11 +598,6 @@ table.referto td {{height:21px;}}
 table.referto td:not(.exam):not(.note) {{text-align:center;}}
 .exam {{padding-left:22px !important;}}
 .note {{font-size:10px; line-height:1.1;}}
-@media print {{
-  body * {{ visibility:hidden; }}
-  .report-sheet, .report-sheet * {{ visibility:visible; }}
-  .report-sheet {{ position:absolute; left:0; top:0; border:0; width:100%; padding:18mm 12mm; }}
-}}
 </style>
 <div class="report-sheet">
   <div class="header">
@@ -500,10 +607,8 @@ table.referto td:not(.exam):not(.note) {{text-align:center;}}
   </div>
   <div class="patient">Sig. {patient}</div>
   <table class="referto">
-    <colgroup>
-      <col style="width:22%"><col style="width:8%"><col style="width:9%"><col style="width:13%"><col style="width:13%"><col style="width:13%"><col style="width:22%">
-    </colgroup>
-    <thead><tr><th>Esame richiesto</th><th>U.M</th><th>{d1 or 'Data 1'}</th><th>{d2 or 'Data 2'}</th><th>Differenza</th><th>Valori di<br>Riferimento</th><th>Nota</th></tr></thead>
+    <colgroup>{colgroup}</colgroup>
+    <thead><tr>{headers}</tr></thead>
     <tbody>{''.join(rows)}</tbody>
   </table>
 </div>"""
@@ -523,14 +628,14 @@ def data_url_from_upload(file) -> Optional[str]:
 # INTERFACCIA STREAMLIT
 # ----------------------------
 st.title("Referto comparativo analisi - layout DB")
-st.caption("Versione corretta v4: note solo sui fuori range, righe rosse e range operativo per peso specifico urine.")
+st.caption("Versione app.py: colonne dinamiche, PDF scaricabile, note solo sui fuori range e righe rosse.")
 
 with st.sidebar:
     st.header("Dati referto")
     patient_manual = st.text_input("Nome paziente manuale", "")
     report_date = st.text_input("Data referto", datetime.now().strftime("%d/%m/%Y"))
     logo_file = st.file_uploader("Logo DB", type=["png", "jpg", "jpeg"], key="logo")
-    st.info("Per Streamlit Cloud metti in requirements.txt: streamlit, pandas, pymupdf, pillow, pytesseract")
+    st.info("Per Streamlit Cloud metti in requirements.txt: streamlit, pandas, pymupdf, pillow, pytesseract, reportlab")
 
 uploads = st.file_uploader("Carica uno o più PDF testuali del laboratorio", type=["pdf", "png", "jpg", "jpeg"], accept_multiple_files=True)
 
@@ -547,18 +652,19 @@ if uploads:
 if all_dfs:
     full_df = pd.concat(all_dfs, ignore_index=True)
     dates = sorted(full_df["Data"].dropna().unique().tolist(), key=lambda d: datetime.strptime(d, "%d/%m/%Y") if re.match(r"\d{2}/\d{2}/\d{4}", d) else datetime.now())
-    selected = st.multiselect("Date da confrontare", dates, default=dates[:2] if len(dates) > 1 else dates[:1])
+    selected = st.multiselect("Date da confrontare", dates, default=dates)
     report_df = build_report_table(full_df, selected)
     patient = patient_manual.strip() or patient_auto
-    d1 = selected[0] if len(selected) > 0 else "Data 1"
-    d2 = selected[1] if len(selected) > 1 else "Data 2"
-
     st.subheader("Anteprima referto")
-    html = report_html(report_df, patient, report_date, data_url_from_upload(logo_file), d1, d2)
+    html = report_html(report_df, patient, report_date, data_url_from_upload(logo_file))
     st.components.v1.html(html, height=760, scrolling=True)
 
     st.download_button("Scarica CSV valori estratti", full_df.to_csv(index=False).encode("utf-8-sig"), "valori_estratti.csv", "text/csv")
-    st.download_button("Scarica HTML stampabile", html.encode("utf-8"), "referto_comparativo.html", "text/html")
+    pdf_bytes = make_pdf(report_df, patient, report_date, logo_file.getvalue() if logo_file else None)
+    if pdf_bytes is None:
+        st.error("PDF non generato: ReportLab non installato. Aggiungi reportlab al requirements.txt e riavvia l’app.")
+    else:
+        st.download_button("Scarica PDF impaginato", pdf_bytes, "referto_comparativo.pdf", "application/pdf")
 
     st.subheader("Valori estratti")
     display_df = full_df.copy()
@@ -575,7 +681,7 @@ if all_dfs:
         edited = st.data_editor(full_df, use_container_width=True, num_rows="dynamic", hide_index=True)
         if st.button("Rigenera anteprima con tabella modificata"):
             report_df = build_report_table(edited, selected)
-            html = report_html(report_df, patient, report_date, data_url_from_upload(logo_file), d1, d2)
+            html = report_html(report_df, patient, report_date, data_url_from_upload(logo_file))
             st.components.v1.html(html, height=760, scrolling=True)
     with st.expander("Testo letto dai referti"):
         for name, txt in texts:
