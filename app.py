@@ -3,11 +3,10 @@ from __future__ import annotations
 import io
 import re
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
-from rapidfuzz import process, fuzz
 
 try:
     import fitz  # PyMuPDF
@@ -24,495 +23,500 @@ try:
 except Exception:
     pytesseract = None
 
-try:
-    from reportlab.lib import colors
-    from reportlab.lib.enums import TA_CENTER, TA_LEFT
-    from reportlab.lib.pagesizes import A4, landscape
-    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-    from reportlab.lib.units import cm
-    from reportlab.platypus import Image as RLImage
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-except Exception:
-    colors = None
-
 st.set_page_config(page_title="Referto comparativo analisi", page_icon="🧪", layout="wide")
 
-APP_CSS = """
-<style>
-.block-container {max-width: 1400px; padding-top: 1.5rem; padding-bottom: 3rem;}
-.main-title {font-size: 2.15rem; font-weight: 800; color: #111827; margin-bottom: .15rem;}
-.sub {color:#667085; margin-bottom:1.2rem;}
-.card {border:1px solid #e5e7eb; border-radius:16px; padding:1rem; background:#ffffff;}
-.warn {border:1px solid #f1d48a; background:#fff8e6; color:#7a5200; border-radius:12px; padding:.8rem 1rem;}
-</style>
-"""
-st.markdown(APP_CSS, unsafe_allow_html=True)
-
-DEFAULT_RANGES = pd.DataFrame([
-    # Emocromo
-    ["WBC-Globuli Bianchi", "wbc|globuli bianchi|leucociti|white blood cells", "10^3/uL", 4.0, 10.0, "ALL", "Leucociti: cellule immunitarie; aumento/riduzione va interpretato con formula leucocitaria e clinica."],
-    ["RBC-Globuli Rossi", "rbc|globuli rossi|eritrociti|red blood cells", "10^6/uL", 4.2, 5.8, "ALL", "Eritrociti: trasportano emoglobina; utili con Hb, HCT e indici eritrocitari."],
-    ["HGB-Emoglobina", "hgb|hb|emoglobina|hemoglobin", "g/dL", 13.0, 17.5, "M", "Emoglobina: proteina che trasporta ossigeno; bassa suggerisce possibile anemia da contestualizzare."],
-    ["HGB-Emoglobina", "hgb|hb|emoglobina|hemoglobin", "g/dL", 12.0, 16.0, "F", "Emoglobina: proteina che trasporta ossigeno; bassa suggerisce possibile anemia da contestualizzare."],
-    ["HCT-Ematocrito", "hct|ematocrito|hematocrit", "%", 40.0, 52.0, "M", "Ematocrito: quota percentuale di volume occupata dai globuli rossi."],
-    ["HCT-Ematocrito", "hct|ematocrito|hematocrit", "%", 36.0, 48.0, "F", "Ematocrito: quota percentuale di volume occupata dai globuli rossi."],
-    ["MCV", "mcv|volume corpuscolare medio", "fL", 80, 100, "ALL", "MCV: dimensione media dei globuli rossi; utile nella classificazione delle anemie."],
-    ["MCH", "mch|contenuto emoglobinico medio", "pg", 27, 33, "ALL", "MCH: contenuto medio di emoglobina per globulo rosso."],
-    ["PLT-Piastrine", "plt|piastrine|platelets", "10^3/uL", 150, 450, "ALL", "Piastrine: coinvolte nella coagulazione; interpretare con anamnesi e farmaci."],
-    # Metabolismo glucidico
-    ["Glicemia", "glicemia|glucosio|glucose", "mg/dL", 70, 99, "ALL", "Glicemia: glucosio ematico; il digiuno e la terapia influenzano l'interpretazione."],
-    ["HbA1c", "hba1c|emoglobina glicata|glicata", "%", 4.0, 5.6, "ALL", "HbA1c: stima dell'esposizione media al glucosio negli ultimi 2-3 mesi."],
-    ["Insulina", "insulina|insulin", "uU/mL", 2, 15, "ALL", "Insulina: ormone pancreatico; utile con glicemia per stimare HOMA-IR."],
-    # Lipidi
-    ["Colesterolo totale", "colesterolo totale|cholesterol total|totale colesterolo", "mg/dL", 0, 200, "ALL", "Colesterolo totale: va letto insieme a LDL, HDL, trigliceridi e rischio cardiovascolare globale."],
-    ["LDL", "ldl|colesterolo ldl", "mg/dL", 0, 116, "ALL", "LDL: frazione aterogena; target dipendente dal rischio cardiovascolare individuale."],
-    ["HDL", "hdl|colesterolo hdl", "mg/dL", 40, 999, "M", "HDL: frazione protettiva; valori bassi peggiorano il profilo cardiometabolico."],
-    ["HDL", "hdl|colesterolo hdl", "mg/dL", 50, 999, "F", "HDL: frazione protettiva; valori bassi peggiorano il profilo cardiometabolico."],
-    ["Trigliceridi", "trigliceridi|triglycerides|tg", "mg/dL", 0, 150, "ALL", "Trigliceridi: sensibili a carboidrati, alcol, digiuno, peso e controllo glicemico."],
-    # Rene/fegato/infiammazione
-    ["Creatinina", "creatinina|creatinine", "mg/dL", 0.6, 1.3, "ALL", "Creatinina: marker indiretto della funzione renale, influenzato dalla massa muscolare."],
-    ["eGFR", "egfr|filtrato glomerulare|gfr", "mL/min/1.73m2", 60, 999, "ALL", "eGFR: stima del filtrato glomerulare; da leggere con età, massa muscolare e idratazione."],
-    ["Uricemia", "uricemia|acido urico|uric acid", "mg/dL", 3.5, 7.2, "ALL", "Uricemia: metabolismo purinico; utile con dieta, alcol, farmaci, rene e rischio gotta."],
-    ["AST-GOT", "ast|got|aspartato aminotransferasi", "U/L", 0, 40, "ALL", "AST/GOT: enzima epatico e muscolare; può aumentare anche dopo esercizio intenso."],
-    ["ALT-GPT", "alt|gpt|alanina aminotransferasi", "U/L", 0, 41, "ALL", "ALT/GPT: enzima più orientativo per danno/sofferenza epatocellulare."],
-    ["Gamma-GT", "gamma gt|ggt|gamma-glutamil transferasi|gamma glutamil transferasi", "U/L", 0, 60, "ALL", "Gamma-GT: enzima epato-biliare; sensibile ad alcol, farmaci e steatosi."],
-    ["PCR", "pcr|proteina c reattiva|crp", "mg/L", 0, 5, "ALL", "PCR: marker infiammatorio aspecifico; non identifica da sola la causa."],
-    ["VES", "ves|velocita eritrosedimentazione|esr", "mm/h", 0, 20, "ALL", "VES: marker infiammatorio aspecifico, più lento e meno dinamico della PCR."],
-    # Assetto marziale/vitamine/tiroide
-    ["Ferritina", "ferritina|ferritin", "ng/mL", 30, 400, "M", "Ferritina: deposito di ferro; aumenta anche con infiammazione."],
-    ["Ferritina", "ferritina|ferritin", "ng/mL", 15, 150, "F", "Ferritina: deposito di ferro; aumenta anche con infiammazione."],
-    ["Sideremia", "sideremia|ferro sierico|serum iron", "ug/dL", 50, 170, "ALL", "Sideremia: ferro circolante; variabile, da interpretare con ferritina/transferrina."],
-    ["Vitamina D", "vitamina d|25-oh vitamina d|25 oh d|25ohd", "ng/mL", 30, 100, "ALL", "Vitamina D: stato vitaminico; interpretare con stagione, supplementazione e obiettivo clinico."],
-    ["Vitamina B12", "vitamina b12|cobalamina|b12", "pg/mL", 200, 900, "ALL", "Vitamina B12: importante per eritropoiesi e funzione neurologica."],
-    ["Folati", "folati|acido folico|folate", "ng/mL", 3, 20, "ALL", "Folati: utili per eritropoiesi e metabolismo dell'omocisteina."],
-    ["TSH", "tsh|tireotropina", "mIU/L", 0.4, 4.0, "ALL", "TSH: principale indicatore di regolazione tiroidea; da leggere con FT3/FT4 e terapia."],
-    ["FT3", "ft3|triiodotironina libera", "pg/mL", 2.0, 4.4, "ALL", "FT3: quota libera della triiodotironina."],
-    ["FT4", "ft4|tiroxina libera", "ng/dL", 0.8, 1.8, "ALL", "FT4: quota libera della tiroxina."],
-], columns=["analita", "alias", "unita", "min", "max", "sesso", "note"])
+# ----------------------------
+# CONFIGURAZIONE BASE
+# ----------------------------
+DOCTOR_BLOCK = """<b>Dr. Danilo Bramard</b><br>
+Biologo Nutrizionista<br>
+Laurea Magistrale in Biologia applicata alle scienze della nutrizione<br>
+Iscritto all'Ordine Nazionale dei Biologi<br>
+P.IVA: 03982150041<br>
+☎ +393393121941 | ✉ danilo@newbodycenter.it"""
 
 GROUPS = {
-    "Emocromo (Sg)": ["WBC-Globuli Bianchi", "RBC-Globuli Rossi", "HGB-Emoglobina", "HCT-Ematocrito", "MCV", "MCH", "PLT-Piastrine"],
-    "Metabolismo glucidico": ["Glicemia", "HbA1c", "Insulina", "HOMA-IR"],
-    "Profilo lipidico": ["Colesterolo totale", "LDL", "HDL", "Trigliceridi", "Rapporto TG/HDL"],
-    "Fegato / rene / infiammazione": ["AST-GOT", "ALT-GPT", "Gamma-GT", "Creatinina", "eGFR", "Uricemia", "PCR", "VES"],
-    "Assetto marziale / vitamine / tiroide": ["Ferritina", "Sideremia", "Vitamina D", "Vitamina B12", "Folati", "TSH", "FT3", "FT4"],
+    "Emocromo (Sg)": [
+        "WBC-Globuli Bianchi", "RBC-Globuli Rossi", "HGB-Emoglobina", "HCT-Ematocrito",
+        "MCV-Volume Eritrocitario", "MCH-Contenuto Corpuscolare HGB", "MCHC-Concentrazione Corpuscolare Hgb",
+        "RDW-Indice Anisocitosi Eritrocitaria", "PLT-Piastrine", "MPV-Volume Piastrinico",
+        "Neutrofili %", "Linfociti %", "Monociti %", "Eosinofili %", "Basofili %",
+        "Neutrofili assoluti", "Linfociti assoluti", "Monociti assoluti", "Eosinofili assoluti", "Basofili assoluti",
+    ],
+    "Metabolismo glucidico": ["Glucosio", "Glicemia", "Insulina", "HbA1c", "HOMA-IR"],
+    "Profilo lipidico": ["Colesterolo totale", "Colesterolo HDL", "Colesterolo LDL", "Trigliceridi", "Rapporto TG/HDL"],
+    "Fegato / rene / infiammazione": ["Creatinina", "eGFR", "GammaGT", "AST-GOT", "ALT-GPT", "PCR", "VES", "Uricemia"],
+    "Assetto marziale / vitamine / tiroide": ["Ferro", "Ferritina", "Transferrina", "Vitamina D", "TSH-R", "FT3", "FT4", "Vitamina B12", "Folati"],
+    "Urine": ["Colore urine", "Aspetto urine", "pH urine", "Glucosio urine", "Proteine urine", "Bilirubina urine", "Urobilinogeno urine", "Emoglobina urine", "Corpi chetonici urine", "Leucociti urine", "Nitriti urine", "Peso specifico urine"],
 }
 
-VALUE_PATTERN = re.compile(
-    r"(?P<name>[A-Za-zÀ-ÿ0-9\-\s\(\)\/\.]{2,70})\s+"
-    r"(?P<value>[<>]?\s*\d{1,6}(?:[\.,]\d+)?)\s*"
-    r"(?P<unit>mg/dL|g/dL|ng/mL|pg/mL|mIU/L|mU/L|µU/mL|uU/mL|U/L|UI/L|%|mmol/L|fL|pg|mm/h|mg/L|µg/dL|ug/dL|10\^3/uL|10\^6/uL|x10\^3/uL|x10\^6/uL|mL/min/1\.73m2)?",
-    re.IGNORECASE,
-)
+ALIASES: Dict[str, str] = {
+    "wbc-globuli bianchi": "WBC-Globuli Bianchi", "wbc": "WBC-Globuli Bianchi", "globuli bianchi": "WBC-Globuli Bianchi",
+    "rbc-globuli rossi": "RBC-Globuli Rossi", "rbc": "RBC-Globuli Rossi", "globuli rossi": "RBC-Globuli Rossi",
+    "hgb-emoglobina": "HGB-Emoglobina", "emoglobina": "HGB-Emoglobina", "hgb": "HGB-Emoglobina",
+    "hct-ematocrito": "HCT-Ematocrito", "ematocrito": "HCT-Ematocrito", "hct": "HCT-Ematocrito",
+    "mcv-volume eritrocitario": "MCV-Volume Eritrocitario", "mcv": "MCV-Volume Eritrocitario",
+    "mch-contenuto corpuscolare hgb": "MCH-Contenuto Corpuscolare HGB", "mch": "MCH-Contenuto Corpuscolare HGB",
+    "mchc-concentrazione corpuscolare hgb": "MCHC-Concentrazione Corpuscolare Hgb", "mchc": "MCHC-Concentrazione Corpuscolare Hgb",
+    "rdw-lndice anisocitosi eritrocitaria": "RDW-Indice Anisocitosi Eritrocitaria", "rdw-indice anisocitosi eritrocitaria": "RDW-Indice Anisocitosi Eritrocitaria", "rdw": "RDW-Indice Anisocitosi Eritrocitaria",
+    "pl t-piastrine": "PLT-Piastrine", "plt-piastrine": "PLT-Piastrine", "piastrine": "PLT-Piastrine", "plt": "PLT-Piastrine",
+    "mpv-volume piastrinico": "MPV-Volume Piastrinico", "mpv": "MPV-Volume Piastrinico",
+    "neutrofili": "Neutrofili %", "linfociti": "Linfociti %", "monociti": "Monociti %", "eosinofili": "Eosinofili %", "eosinofi/i": "Eosinofili %", "basofili": "Basofili %",
+    "glucosio": "Glucosio", "glucosio (s)": "Glucosio", "glicemia": "Glicemia",
+    "creatinina": "Creatinina", "egfr": "eGFR", "egfr (velocità filtrato glomerulare stimata)": "eGFR", "velocità filtrato glomerulare stimata": "eGFR",
+    "gammagt": "GammaGT", "gamma gt": "GammaGT", "ggt": "GammaGT",
+    "ferro": "Ferro", "ferro (s)": "Ferro",
+    "colesterolo": "Colesterolo totale", "colesterolo (s)": "Colesterolo totale", "colesterolo totale": "Colesterolo totale",
+    "colesterolo hdl": "Colesterolo HDL", "colesterolo hdl (s)": "Colesterolo HDL", "hdl": "Colesterolo HDL",
+    "trigliceridi": "Trigliceridi", "trigliceridi (s)": "Trigliceridi",
+    "tsh-r": "TSH-R", "tsh-r (s)": "TSH-R", "tsh": "TSH-R",
+    "ferritina": "Ferritina", "ferritina (s)": "Ferritina",
+    "colore": "Colore urine", "aspetto": "Aspetto urine", "ph": "pH urine", "proteine": "Proteine urine", "bilirubina": "Bilirubina urine", "urobilinogeno": "Urobilinogeno urine", "emoglobina": "Emoglobina urine", "corpi chetonici": "Corpi chetonici urine", "leucociti": "Leucociti urine", "nitriti": "Nitriti urine", "peso specifico": "Peso specifico urine",
+}
 
-DATE_PATTERNS = [
-    re.compile(r"(?:data\s*(?:prelievo|accettazione|referto|esame)?\s*[:\-]?\s*)?(\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4})", re.I),
-]
+NOTES = {
+    "WBC-Globuli Bianchi": "Leucociti: difesa immunitaria; valutare con formula leucocitaria.",
+    "RBC-Globuli Rossi": "Eritrociti: da leggere con Hb, HCT e indici eritrocitari.",
+    "HGB-Emoglobina": "Emoglobina: trasporto dell'ossigeno; bassa compatibile con quadro anemico da contestualizzare.",
+    "HCT-Ematocrito": "Ematocrito: quota volumetrica dei globuli rossi.",
+    "MCV-Volume Eritrocitario": "MCV: volume medio dei globuli rossi; utile per classificare micro/macro-citosi.",
+    "MCH-Contenuto Corpuscolare HGB": "MCH: contenuto medio di emoglobina per eritrocita.",
+    "MCHC-Concentrazione Corpuscolare Hgb": "MCHC: concentrazione media di emoglobina negli eritrociti.",
+    "RDW-Indice Anisocitosi Eritrocitaria": "RDW: variabilità dimensionale dei globuli rossi; utile con MCV e ferritina.",
+    "PLT-Piastrine": "Piastrine: coagulazione/emostasi; interpretare con clinica e farmaci.",
+    "Glucosio": "Glucosio/glicemia: dipende dal digiuno e dal metabolismo glucidico.",
+    "Glicemia": "Glicemia: dipende dal digiuno e dal metabolismo glucidico.",
+    "Creatinina": "Creatinina: indicatore indiretto della funzione renale, influenzato dalla massa muscolare.",
+    "eGFR": "eGFR: stima del filtrato glomerulare; cautela in masse muscolari estreme.",
+    "GammaGT": "GammaGT: enzima epato-biliare; sensibile ad alcol, farmaci e steatosi.",
+    "Ferro": "Ferro sierico: variabile; leggere con ferritina, transferrina e emocromo.",
+    "Ferritina": "Ferritina: deposito di ferro; aumenta anche con infiammazione.",
+    "Colesterolo totale": "Colesterolo totale: leggere insieme a HDL, LDL, TG e rischio cardiovascolare.",
+    "Colesterolo HDL": "HDL: frazione protettiva; auspicabile più alta, specie nel profilo cardiometabolico.",
+    "Trigliceridi": "Trigliceridi: influenzati da dieta, alcol, peso, digiuno e metabolismo glucidico.",
+    "TSH-R": "TSH: marker ipofisario della funzione tiroidea; contestualizzare con FT3/FT4 e terapia.",
+    "pH urine": "pH urinario: dipende da dieta, idratazione e condizioni metaboliche.",
+    "Peso specifico urine": "Peso specifico: indicatore della concentrazione urinaria/idratazione.",
+}
+
+IGNORE_NAMES = {"esame richiesto", "risultato", "u.m.", "valori di riferimento", "metodica", "siero", "formula leucocitaria strumentale", "valori percentuali", "valori assolu", "urine: chimico fisico e microscopico", "es. microscopico del sedimento"}
+
+NUM_RE = re.compile(r"^[<>]?\s*\d+(?:[\.,]\d+)?(?:\s*\*)?$")
+DATE_REQUEST_RE = re.compile(r"\bdel\s+(\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})\b", re.I)
+DATE_ANY_RE = re.compile(r"\b\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}\b")
 
 
-def load_ranges() -> pd.DataFrame:
-    try:
-        df = pd.read_csv("range_laboratorio.csv")
-        needed = {"analita", "alias", "unita", "min", "max", "sesso", "note"}
-        if needed.issubset(df.columns):
-            df["sesso"] = df["sesso"].fillna("ALL").str.upper()
-            return df
-    except Exception:
-        pass
-    return DEFAULT_RANGES.copy()
+def clean(s: str) -> str:
+    return re.sub(r"\s+", " ", str(s).strip())
 
 
-def build_alias_index(ranges: pd.DataFrame) -> Dict[str, str]:
-    out: Dict[str, str] = {}
-    for _, row in ranges.iterrows():
-        for alias in str(row["alias"]).split("|"):
-            out[alias.lower().strip()] = row["analita"]
-        out[str(row["analita"]).lower().strip()] = row["analita"]
-    return out
+def norm_name(s: str) -> str:
+    s = clean(s).lower().replace("(s)", "").strip()
+    s = s.replace("ì", "i").replace("lnd", "ind")
+    return s.strip(" :-")
 
 
-def normalize_number(value: str) -> Optional[float]:
-    value = value.strip().replace(" ", "").replace(",", ".")
-    value = value.lstrip("<>")
-    try:
-        return float(value)
-    except Exception:
+def canonicalize_name(name: str, urine_mode: bool = False) -> Optional[str]:
+    n = norm_name(name)
+    if not n or n in IGNORE_NAMES:
         return None
-
-
-def parse_date(text: str, fallback_name: str) -> str:
-    candidates: List[datetime] = []
-    for pat in DATE_PATTERNS:
-        for raw in pat.findall(text[:5000]):
-            raw = raw.replace("-", "/").replace(".", "/")
-            for fmt in ["%d/%m/%Y", "%d/%m/%y"]:
-                try:
-                    candidates.append(datetime.strptime(raw, fmt))
-                    break
-                except Exception:
-                    pass
-    if candidates:
-        return min(candidates).strftime("%d/%m/%Y")
-    return fallback_name
-
-
-def extract_text_from_upload(uploaded_file) -> str:
-    name = uploaded_file.name.lower()
-    data = uploaded_file.read()
-    if name.endswith(".pdf"):
-        if fitz is None:
-            st.error("PyMuPDF non installato: impossibile leggere PDF testuali.")
-            return ""
-        doc = fitz.open(stream=data, filetype="pdf")
-        text = "\n".join(page.get_text("text") for page in doc)
-        return text
-    if name.endswith((".png", ".jpg", ".jpeg", ".webp")):
-        if Image is None or pytesseract is None:
-            st.warning("Per leggere immagini scannerizzate serve OCR: installa pillow + pytesseract + Tesseract.")
-            return ""
-        image = Image.open(io.BytesIO(data))
-        return pytesseract.image_to_string(image, lang="ita+eng")
-    return ""
-
-
-def match_analyte(raw_name: str, alias_index: Dict[str, str], threshold: int = 82) -> Optional[str]:
-    raw = raw_name.lower().strip(" :-\t")
-    if raw in alias_index:
-        return alias_index[raw]
-    result = process.extractOne(raw, list(alias_index.keys()), scorer=fuzz.partial_ratio)
-    if result and result[1] >= threshold:
-        return alias_index[result[0]]
+    if urine_mode and n in {"glucosio", "emoglobina"}:
+        return {"glucosio": "Glucosio urine", "emoglobina": "Emoglobina urine"}[n]
+    if n in ALIASES:
+        return ALIASES[n]
+    # match robusto ma controllato
+    for k, v in ALIASES.items():
+        if n == k or n.startswith(k + " ") or k in n:
+            return v
     return None
 
 
-def get_reference(analita: Optional[str], sesso: str, ranges: pd.DataFrame):
-    if not analita:
-        return None
-    sesso = sesso.upper()
-    sub = ranges[(ranges["analita"] == analita) & ((ranges["sesso"] == sesso) | (ranges["sesso"] == "ALL"))]
-    if sub.empty:
-        return None
-    specific = sub[sub["sesso"] == sesso]
-    return specific.iloc[0] if not specific.empty else sub.iloc[0]
+def parse_num(s: str):
+    s = clean(s).replace("*", "").replace("<", "").replace(">", "").replace(",", ".")
+    try:
+        return float(s)
+    except Exception:
+        return s
 
 
-def classify(value: float, minimum: Optional[float], maximum: Optional[float]) -> str:
-    if minimum is None or maximum is None or pd.isna(minimum) or pd.isna(maximum):
+def fmt_value(v) -> str:
+    if v is None or (isinstance(v, float) and pd.isna(v)):
         return ""
-    if value < float(minimum):
-        return "BASSO"
-    if value > float(maximum):
-        return "ALTO"
-    return "OK"
+    if isinstance(v, (int, float)):
+        return f"{v:g}".replace(".", ",")
+    return str(v)
 
 
-def extract_values(text: str, sesso: str, source_date: str) -> pd.DataFrame:
-    ranges = load_ranges()
-    alias_index = build_alias_index(ranges)
+def parse_date(text: str, fallback: str = "") -> str:
+    m = DATE_REQUEST_RE.search(text[:3000])
+    raw = m.group(1) if m else None
+    if not raw:
+        # evita di prendere la data di nascita: di solito la data referto è vicina a Nr. Richiesta
+        near = re.search(r"Nr\.?\s*R\w+[^\n]{0,80}", text[:3000], re.I)
+        if near:
+            mm = DATE_ANY_RE.search(near.group(0))
+            raw = mm.group(0) if mm else None
+    if not raw:
+        all_dates = DATE_ANY_RE.findall(text[:3000])
+        raw = all_dates[0] if all_dates else None
+    if not raw:
+        return fallback
+    raw = raw.replace("-", "/").replace(".", "/")
+    for fmt in ("%d/%m/%Y", "%d/%m/%y"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%d/%m/%Y")
+        except Exception:
+            pass
+    return raw
+
+
+def parse_patient(text: str) -> str:
+    lines = [clean(x) for x in text.splitlines() if clean(x)]
+    for i, line in enumerate(lines):
+        if re.search(r"Nr\.?\s*R", line, re.I) and i + 1 < len(lines):
+            cand = lines[i + 1]
+            if re.match(r"^[A-ZÀ-Ù' ]{5,}$", cand):
+                return cand.title()
+    return "Esempio"
+
+
+def cluster_lines(words):
     rows = []
-    seen = set()
-    for line in text.splitlines():
-        line = re.sub(r"\s+", " ", line.strip())
-        if len(line) < 4:
+    for w in words:
+        x0, y0, x1, y1, txt = w[:5]
+        if not txt.strip():
             continue
-        m = VALUE_PATTERN.search(line)
-        if not m:
-            continue
-        value = normalize_number(m.group("value"))
-        if value is None:
-            continue
-        raw_name = m.group("name").strip(" :-")
-        analita = match_analyte(raw_name, alias_index)
-        if not analita:
-            continue
-        key = (analita, source_date)
-        if key in seen:
-            continue
-        seen.add(key)
-        ref = get_reference(analita, sesso, ranges)
-        if ref is not None:
-            unit = m.group("unit") or ref["unita"]
-            rmin, rmax, note = float(ref["min"]), float(ref["max"]), ref["note"]
-        else:
-            unit, rmin, rmax, note = m.group("unit") or "", None, None, "Range non presente nel database."
-        rows.append({
-            "Analita": analita,
-            "Data": source_date,
-            "Valore": value,
-            "UM": unit,
-            "Range minimo": rmin,
-            "Range massimo": rmax,
-            "Valori di riferimento": ref_string(rmin, rmax, unit),
-            "Stato": classify(value, rmin, rmax),
-            "Nota": note,
-            "Riga originale": line,
-        })
-    return pd.DataFrame(rows)
+        placed = False
+        for row in rows:
+            if abs(row["y"] - y0) <= 3.0:
+                row["items"].append((x0, txt))
+                row["y"] = (row["y"] + y0) / 2
+                placed = True
+                break
+        if not placed:
+            rows.append({"y": y0, "items": [(x0, txt)]})
+    out = []
+    for row in sorted(rows, key=lambda r: r["y"]):
+        items = sorted(row["items"])
+        cols = {"name": [], "value": [], "unit": [], "ref": []}
+        for x, txt in items:
+            if x < 235:
+                cols["name"].append(txt)
+            elif x < 330:
+                cols["value"].append(txt)
+            elif x < 430:
+                cols["unit"].append(txt)
+            else:
+                cols["ref"].append(txt)
+        out.append({"y": row["y"], **{k: clean(" ".join(v)) for k, v in cols.items()}})
+    return out
+
+
+def extract_pdf_structured(data: bytes, filename: str) -> Tuple[pd.DataFrame, str, str, str]:
+    if fitz is None:
+        st.error("PyMuPDF non installato. Aggiungi pymupdf al requirements.txt")
+        return pd.DataFrame(), "", "", ""
+    doc = fitz.open(stream=data, filetype="pdf")
+    full_text = "\n".join(page.get_text("text") for page in doc)
+    date = parse_date(full_text, filename)
+    patient = parse_patient(full_text)
+    rows = []
+
+    for pno, page in enumerate(doc, start=1):
+        lines = cluster_lines(page.get_text("words"))
+        pending: List[dict] = []
+        urine_mode = False
+        pct_names = ["Neutrofili %", "Linfociti %", "Monociti %", "Eosinofili %", "Basofili %"]
+        abs_names = ["Neutrofili assoluti", "Linfociti assoluti", "Monociti assoluti", "Eosinofili assoluti", "Basofili assoluti"]
+        pct_idx = 0
+        abs_idx = 0
+
+        for line in lines:
+            y, name_txt, val_txt, unit_txt, ref_txt = line["y"], line["name"], line["value"], line["unit"], line["ref"]
+            nlow = norm_name(name_txt)
+            if "urine" in nlow and "chimico" in nlow:
+                urine_mode = True
+            if "formula leucocitaria" in nlow:
+                urine_mode = False
+
+            # nome analita dalla colonna sinistra
+            canonical = canonicalize_name(name_txt, urine_mode=urine_mode)
+            if canonical:
+                pending.append({"Analita": canonical, "Nome letto": name_txt, "y": y, "page": pno})
+
+            # formule leucocitarie: valore percentuale a x 235-330 e assoluto a x 330-430/ref x>430
+            if nlow in ["neutrofili", "linfociti", "monociti", "eosinofi/i", "eosinofili", "basofili"] and NUM_RE.match(val_txt):
+                rows.append(make_row(pct_names[pct_idx], date, parse_num(val_txt), "%", unit_txt if unit_txt.startswith("[") else ref_txt, name_txt, pno))
+                pct_idx = min(pct_idx + 1, len(pct_names)-1)
+                # assoluti nello stesso rigo: spesso sono nella colonna unit/ref. Qui recuperiamo con regex da unit/ref non sempre pulito.
+                abs_match = re.search(r"\d+[\.,]\d+", unit_txt)
+                if abs_match and abs_idx < len(abs_names):
+                    rows.append(make_row(abs_names[abs_idx], date, parse_num(abs_match.group(0)), "K/µl", ref_txt, name_txt, pno))
+                    abs_idx += 1
+                continue
+
+            # valore presente nella colonna risultato. Alcuni PDF infilano anche l'unità nella colonna valore
+            # es. "103 mUmin/1,73mq": prendiamo il primo numero come valore e il resto come unità.
+            value_match = re.match(r"^(?P<num>[<>]?\s*\d+(?:[\.,]\d+)?(?:\s*\*)?)(?:\s+(?P<extra>.*))?$", val_txt or "")
+            if value_match:
+                # prendi l'analita pendente più vicina sopra, non già usata alla stessa pagina
+                candidates = [p for p in pending if p["y"] <= y + 2 and not p.get("used")]
+                if not candidates:
+                    continue
+                chosen = sorted(candidates, key=lambda p: abs(y - p["y"]))[0]
+                chosen["used"] = True
+                extra_unit = clean(value_match.group("extra") or "")
+                unit = clean((extra_unit + " " + unit_txt).strip())
+                ref = ref_txt
+                rows.append(make_row(chosen["Analita"], date, parse_num(value_match.group("num")), unit, ref, chosen["Nome letto"], pno))
+
+            # valori testuali urine, es. PAGLIA/LIMPIDO/NEGATIVO, spesso in colonna risultato
+            elif urine_mode and val_txt and canonical:
+                rows.append(make_row(canonical, date, val_txt, unit_txt, ref_txt, name_txt, pno))
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df, full_text, patient, date
+    # deduplica: conserva prima occorrenza plausibile
+    df = df.drop_duplicates(subset=["Analita", "Data"], keep="first")
+    df = add_derived(df)
+    return df, full_text, patient, date
+
+
+def make_row(analita, date, value, unit, ref, original, page):
+    unit = clean(unit)
+    ref = clean(ref).replace("[", "").replace("]", "").replace("(", "").replace(")", "")
+    # sistemazioni unità frequenti OCR/PDF
+    unit = unit.replace("mg/dl", "mg/dL").replace("µg/dl", "µg/dL").replace("K/µI", "K/µL").replace("M/µI", "M/µL")
+    stato = stato_from_ref(value, ref)
+    return {
+        "Analita": analita,
+        "Data": date,
+        "Valore": value,
+        "UM": unit,
+        "Valori di riferimento": ref,
+        "Stato": stato,
+        "Nota": NOTES.get(analita, "Parametro da contestualizzare con quadro clinico, range del laboratorio e terapia."),
+        "Riga originale": f"pag. {page}: {original}",
+    }
+
+
+def ref_nums(ref: str):
+    nums = [float(x.replace(",", ".")) for x in re.findall(r"\d+(?:[\.,]\d+)?", ref or "")]
+    return nums
+
+
+def stato_from_ref(value, ref: str) -> str:
+    if not isinstance(value, (int, float)) or not ref:
+        return ""
+    r = ref.lower().replace(" ", "")
+    nums = ref_nums(ref)
+    if not nums:
+        return ""
+    if "finoa" in r or "<" in r:
+        return "ALTO" if float(value) > nums[-1] else "OK"
+    if "oltre" in r or ">" in r:
+        return "BASSO" if float(value) < nums[0] else "OK"
+    if len(nums) >= 2:
+        lo, hi = nums[0], nums[-1]
+        if float(value) < lo: return "BASSO"
+        if float(value) > hi: return "ALTO"
+        return "OK"
+    return ""
 
 
 def add_derived(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return df
-    rows = []
+    extra = []
     for date, sub in df.groupby("Data"):
         vals = dict(zip(sub["Analita"], sub["Valore"]))
-        if "Glicemia" in vals and "Insulina" in vals:
-            homa = round(vals["Glicemia"] * vals["Insulina"] / 405, 2)
-            rows.append({"Analita": "HOMA-IR", "Data": date, "Valore": homa, "UM": "", "Range minimo": 0, "Range massimo": 2.5,
-                         "Valori di riferimento": "0 - 2.5", "Stato": classify(homa, 0, 2.5),
-                         "Nota": "Indice stimato di insulino-resistenza calcolato da glicemia e insulina.", "Riga originale": "calcolo automatico"})
-        if "Trigliceridi" in vals and "HDL" in vals and vals["HDL"]:
-            ratio = round(vals["Trigliceridi"] / vals["HDL"], 2)
-            rows.append({"Analita": "Rapporto TG/HDL", "Data": date, "Valore": ratio, "UM": "", "Range minimo": 0, "Range massimo": 2.0,
-                         "Valori di riferimento": "0 - 2.0", "Stato": classify(ratio, 0, 2.0),
-                         "Nota": "Indice metabolico indiretto; cut-off indicativo.", "Riga originale": "calcolo automatico"})
-    return pd.concat([df, pd.DataFrame(rows)], ignore_index=True) if rows else df
+        glu = vals.get("Glucosio") or vals.get("Glicemia")
+        ins = vals.get("Insulina")
+        if isinstance(glu, (int, float)) and isinstance(ins, (int, float)):
+            homa = round(glu * ins / 405, 2)
+            extra.append({"Analita":"HOMA-IR", "Data":date, "Valore":homa, "UM":"", "Valori di riferimento":"< 2,5", "Stato":"ALTO" if homa>2.5 else "OK", "Nota":"Indice stimato di insulino-resistenza calcolato da glicemia e insulina.", "Riga originale":"calcolo automatico"})
+        tg, hdl = vals.get("Trigliceridi"), vals.get("Colesterolo HDL")
+        if isinstance(tg, (int, float)) and isinstance(hdl, (int, float)) and hdl:
+            ratio = round(tg/hdl, 2)
+            extra.append({"Analita":"Rapporto TG/HDL", "Data":date, "Valore":ratio, "UM":"", "Valori di riferimento":"< 2", "Stato":"ALTO" if ratio>2 else "OK", "Nota":"Indice metabolico indiretto; cut-off indicativo.", "Riga originale":"calcolo automatico"})
+    return pd.concat([df, pd.DataFrame(extra)], ignore_index=True) if extra else df
 
 
-def ref_string(rmin, rmax, unit: str) -> str:
-    if rmin is None or rmax is None or pd.isna(rmin) or pd.isna(rmax):
+def extract_image_text(data: bytes) -> str:
+    if Image is None or pytesseract is None:
+        st.warning("Per immagini/scansioni serve pillow + pytesseract + Tesseract nel sistema. Su Streamlit Cloud è meglio caricare PDF testuali.")
         return ""
-    if float(rmin) == 0:
-        return f"< {rmax:g} {unit}".strip()
-    if float(rmax) >= 900:
-        return f"> {rmin:g} {unit}".strip()
-    return f"{rmin:g} - {rmax:g} {unit}".strip()
+    img = Image.open(io.BytesIO(data))
+    return pytesseract.image_to_string(img, lang="ita+eng")
 
 
-def fmt_val(x) -> str:
-    if pd.isna(x):
+def process_upload(uploaded) -> Tuple[pd.DataFrame, str, str, str]:
+    data = uploaded.getvalue()
+    name = uploaded.name
+    if name.lower().endswith(".pdf"):
+        return extract_pdf_structured(data, name)
+    text = extract_image_text(data)
+    return pd.DataFrame(), text, "Esempio", name
+
+
+def delta(v1, v2, unit: str) -> str:
+    if v1 == "" or v2 == "":
         return ""
     try:
-        return f"{float(x):g}"
+        d = float(str(v2).replace(",", ".")) - float(str(v1).replace(",", "."))
+        sign = "+" if d > 0 else ""
+        return f"{sign}{d:g} {unit}".strip().replace(".", ",")
     except Exception:
-        return str(x)
-
-
-def delta_text(v1, v2, unit: str) -> str:
-    if pd.isna(v1) or pd.isna(v2):
         return ""
-    d = float(v2) - float(v1)
-    sign = "+" if d > 0 else ""
-    pct = (d / float(v1) * 100) if float(v1) != 0 else None
-    if pct is None:
-        return f"{sign}{d:g} {unit}".strip()
-    return f"{sign}{d:g} {unit} ({sign}{pct:.1f}%)".strip()
 
 
-def build_comparison(df: pd.DataFrame, selected_dates: List[str]) -> pd.DataFrame:
+def build_report_table(df: pd.DataFrame, dates: List[str]) -> pd.DataFrame:
     if df.empty:
-        return pd.DataFrame()
-    dates = selected_dates[:2]
+        return pd.DataFrame(columns=["_group", "Esame richiesto", "U.M", "Data 1", "Data 2", "Differenza", "Valori di Riferimento", "Nota"])
+    dates = dates[:2]
     pivot = df.pivot_table(index="Analita", columns="Data", values="Valore", aggfunc="first")
     meta = df.drop_duplicates("Analita").set_index("Analita")
-    order_rows = []
-    all_known = []
-    for group, analytes in GROUPS.items():
-        order_rows.append({"_group": True, "Esame richiesto": group})
-        all_known += analytes
-        for a in analytes:
-            if a in pivot.index:
-                v1 = pivot.loc[a, dates[0]] if len(dates) > 0 and dates[0] in pivot.columns else pd.NA
-                v2 = pivot.loc[a, dates[1]] if len(dates) > 1 and dates[1] in pivot.columns else pd.NA
-                unit = str(meta.loc[a, "UM"] or "") if a in meta.index else ""
-                stato = ""
-                if a in meta.index:
-                    stati = df[df["Analita"] == a]["Stato"].dropna().unique().tolist()
-                    if "ALTO" in stati or "BASSO" in stati:
-                        stato = " | Attenzione: valore fuori range in almeno una data."
-                order_rows.append({
-                    "_group": False,
-                    "Esame richiesto": a,
-                    "U.M": unit,
-                    "Data 1": fmt_val(v1),
-                    "Data 2": fmt_val(v2),
-                    "Differenza": delta_text(v1, v2, unit),
-                    "Valori di Riferimento": meta.loc[a, "Valori di riferimento"] if a in meta.index else "",
-                    "Nota": (meta.loc[a, "Nota"] if a in meta.index else "") + stato,
-                })
-    # analiti riconosciuti non presenti nei gruppi
-    for a in [x for x in pivot.index if x not in all_known]:
-        v1 = pivot.loc[a, dates[0]] if len(dates) > 0 and dates[0] in pivot.columns else pd.NA
-        v2 = pivot.loc[a, dates[1]] if len(dates) > 1 and dates[1] in pivot.columns else pd.NA
-        unit = str(meta.loc[a, "UM"] or "") if a in meta.index else ""
-        order_rows.append({"_group": False, "Esame richiesto": a, "U.M": unit, "Data 1": fmt_val(v1), "Data 2": fmt_val(v2),
-                           "Differenza": delta_text(v1, v2, unit), "Valori di Riferimento": meta.loc[a, "Valori di riferimento"], "Nota": meta.loc[a, "Nota"]})
-    return pd.DataFrame(order_rows)
+    out = []
+    used = set()
+    for group, names in GROUPS.items():
+        present = [n for n in names if n in pivot.index]
+        # mostra sempre i macro-gruppi principali, ma le righe solo se presenti
+        out.append({"_group": True, "Esame richiesto": group, "U.M":"", "Data 1":"", "Data 2":"", "Differenza":"", "Valori di Riferimento":"", "Nota":""})
+        for n in present:
+            used.add(n)
+            v1 = pivot.loc[n, dates[0]] if len(dates) > 0 and dates[0] in pivot.columns else ""
+            v2 = pivot.loc[n, dates[1]] if len(dates) > 1 and dates[1] in pivot.columns else ""
+            unit = meta.loc[n, "UM"] if n in meta.index else ""
+            stt = ""
+            if n in meta.index and str(meta.loc[n, "Stato"]) in ["ALTO", "BASSO"]:
+                stt = f" Attenzione: {meta.loc[n, 'Stato']}."
+            out.append({"_group": False, "Esame richiesto": n, "U.M": unit, "Data 1": fmt_value(v1), "Data 2": fmt_value(v2), "Differenza": delta(fmt_value(v1), fmt_value(v2), unit), "Valori di Riferimento": meta.loc[n, "Valori di riferimento"], "Nota": str(meta.loc[n, "Nota"]) + stt})
+    for n in [x for x in pivot.index if x not in used]:
+        v1 = pivot.loc[n, dates[0]] if len(dates) > 0 and dates[0] in pivot.columns else ""
+        v2 = pivot.loc[n, dates[1]] if len(dates) > 1 and dates[1] in pivot.columns else ""
+        unit = meta.loc[n, "UM"] if n in meta.index else ""
+        out.append({"_group": False, "Esame richiesto": n, "U.M": unit, "Data 1": fmt_value(v1), "Data 2": fmt_value(v2), "Differenza": delta(fmt_value(v1), fmt_value(v2), unit), "Valori di Riferimento": meta.loc[n, "Valori di riferimento"], "Nota": meta.loc[n, "Nota"]})
+    return pd.DataFrame(out)
 
 
-def make_pdf(report_df: pd.DataFrame, patient: str, report_date: str, logo_file, doctor_block: str) -> bytes:
-    if colors is None:
-        raise RuntimeError("ReportLab non installato. Installa: pip install reportlab")
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), leftMargin=1.0*cm, rightMargin=1.0*cm, topMargin=.8*cm, bottomMargin=.8*cm)
-    styles = getSampleStyleSheet()
-    small = ParagraphStyle("small", parent=styles["Normal"], fontSize=7, leading=8.5)
-    small_center = ParagraphStyle("small_center", parent=small, alignment=TA_CENTER)
-    normal = ParagraphStyle("normal", parent=styles["Normal"], fontSize=9, leading=11)
-    elems = []
-    header_cells = []
-    if logo_file is not None:
-        raw = logo_file.getvalue()
-        img = RLImage(io.BytesIO(raw), width=5.8*cm, height=3.0*cm, kind="proportional")
-        header_cells.append(img)
-    else:
-        header_cells.append(Paragraph("<b>LOGO</b>", normal))
-    header_cells.append(Paragraph(doctor_block.replace("\n", "<br/>"), normal))
-    header_cells.append(Paragraph(report_date, normal))
-    header = Table([header_cells], colWidths=[6.2*cm, 13.5*cm, 6.2*cm])
-    header.setStyle(TableStyle([("VALIGN", (0,0), (-1,-1), "TOP"), ("ALIGN", (2,0), (2,0), "RIGHT")]))
-    elems.append(header)
-    elems.append(Spacer(1, .4*cm))
-    elems.append(Paragraph(f"Sig. {patient}", normal))
-    elems.append(Spacer(1, .25*cm))
-    data = [[Paragraph("<i>Esame richiesto</i>", small_center), Paragraph("<i>U.M</i>", small_center), Paragraph("Data 1", small_center), Paragraph("Data 2", small_center), Paragraph("<i>Differenza</i>", small_center), Paragraph("Valori di<br/>Riferimento", small_center), Paragraph("Nota", small_center)]]
+def report_html(report_df: pd.DataFrame, patient: str, report_date: str, logo_data_url: Optional[str], d1: str, d2: str) -> str:
+    logo = f'<img src="{logo_data_url}" class="logo">' if logo_data_url else '<div class="logo-placeholder">DB<br><span>Nutrition and Performance</span></div>'
+    rows = []
     for _, r in report_df.iterrows():
-        if bool(r.get("_group", False)):
-            data.append([Paragraph(f"<b>{r['Esame richiesto']}</b>", small), "", "", "", "", "", ""])
+        if r.get("_group"):
+            rows.append(f'<tr class="group"><td colspan="7"><b>{r["Esame richiesto"]}</b></td></tr>')
         else:
-            data.append([Paragraph(str(r.get("Esame richiesto", "")), small), Paragraph(str(r.get("U.M", "")), small_center), Paragraph(str(r.get("Data 1", "")), small_center), Paragraph(str(r.get("Data 2", "")), small_center), Paragraph(str(r.get("Differenza", "")), small_center), Paragraph(str(r.get("Valori di Riferimento", "")), small_center), Paragraph(str(r.get("Nota", "")), small)])
-    table = Table(data, colWidths=[5.6*cm, 1.7*cm, 2.4*cm, 2.4*cm, 3.4*cm, 3.2*cm, 8.0*cm], repeatRows=1)
-    style = TableStyle([
-        ("GRID", (0,0), (-1,-1), .45, colors.black),
-        ("BACKGROUND", (0,0), (-1,0), colors.whitesmoke),
-        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
-        ("FONTSIZE", (0,0), (-1,-1), 7),
-    ])
-    for idx, r in report_df.iterrows():
-        table_row = idx + 1
-        if bool(r.get("_group", False)):
-            style.add("BACKGROUND", (0, table_row), (-1, table_row), colors.HexColor("#f3f4f6"))
-            style.add("SPAN", (0, table_row), (-1, table_row))
-    table.setStyle(style)
-    elems.append(table)
-    doc.build(elems)
-    return buffer.getvalue()
+            rows.append("<tr>" + "".join([
+                f'<td class="exam">{r["Esame richiesto"]}</td>',
+                f'<td>{r["U.M"]}</td>',
+                f'<td>{r["Data 1"]}</td>',
+                f'<td>{r["Data 2"]}</td>',
+                f'<td>{r["Differenza"]}</td>',
+                f'<td>{r["Valori di Riferimento"]}</td>',
+                f'<td class="note">{r["Nota"]}</td>',
+            ]) + "</tr>")
+    return f"""
+<style>
+.report-sheet {{background:white; color:#000; width:1180px; padding:24px 34px 38px 34px; border:1px solid #ddd; font-family:Arial, Helvetica, sans-serif;}}
+.header {{display:flex; align-items:flex-start; gap:28px;}}
+.logo {{width:224px; max-height:156px; object-fit:contain;}}
+.logo-placeholder {{width:224px;height:130px;font-size:70px;font-weight:900;border-bottom:1px solid #9bbcff;line-height:.85;}}
+.logo-placeholder span {{font-size:13px;text-transform:uppercase;font-weight:600;}}
+.doctor {{border-left:2px solid #6aa0ff; padding-left:10px; font-size:14px; line-height:1.55; max-width:560px;}}
+.date {{margin-left:auto; font-size:14px; padding-top:166px;}}
+.patient {{margin-top:24px; margin-bottom:14px; font-size:14px;}}
+table.referto {{width:100%; border-collapse:collapse; table-layout:fixed; font-size:12px;}}
+table.referto th, table.referto td {{border:1px solid #111; padding:4px 7px; vertical-align:middle; word-wrap:break-word;}}
+table.referto th {{font-style:italic; font-weight:400; text-align:center;}}
+table.referto .group td {{background:#f1f1f1; font-weight:700; text-align:left; padding:4px 8px;}}
+table.referto td {{height:21px;}}
+table.referto td:not(.exam):not(.note) {{text-align:center;}}
+.exam {{padding-left:22px !important;}}
+.note {{font-size:10px; line-height:1.1;}}
+@media print {{
+  body * {{ visibility:hidden; }}
+  .report-sheet, .report-sheet * {{ visibility:visible; }}
+  .report-sheet {{ position:absolute; left:0; top:0; border:0; width:100%; padding:18mm 12mm; }}
+}}
+</style>
+<div class="report-sheet">
+  <div class="header">
+    <div>{logo}</div>
+    <div class="doctor">{DOCTOR_BLOCK}</div>
+    <div class="date">{report_date}</div>
+  </div>
+  <div class="patient">Sig. {patient}</div>
+  <table class="referto">
+    <colgroup>
+      <col style="width:22%"><col style="width:8%"><col style="width:9%"><col style="width:13%"><col style="width:13%"><col style="width:13%"><col style="width:22%">
+    </colgroup>
+    <thead><tr><th>Esame richiesto</th><th>U.M</th><th>{d1 or 'Data 1'}</th><th>{d2 or 'Data 2'}</th><th>Differenza</th><th>Valori di<br>Riferimento</th><th>Nota</th></tr></thead>
+    <tbody>{''.join(rows)}</tbody>
+  </table>
+</div>"""
 
 
-
-
-def render_like_example(report_df: pd.DataFrame, patient: str, report_date: str, doctor_block: str, logo_file=None):
-    """Anteprima HTML molto simile allo schema inviato."""
+def data_url_from_upload(file) -> Optional[str]:
+    if not file:
+        return None
+    raw = file.getvalue()
     import base64
-    logo_html = '<div class="db-logo-text">DB<br><span>BIOLOGO NUTRIZIONISTA</span></div>'
-    if logo_file is not None:
-        try:
-            raw = logo_file.getvalue()
-            b64 = base64.b64encode(raw).decode('ascii')
-            logo_html = f'<img class="db-logo-img" src="data:image/png;base64,{b64}">' 
-        except Exception:
-            pass
-    lines = [x.strip() for x in doctor_block.splitlines() if x.strip()]
-    if lines:
-        lines[0] = f"<b>{lines[0]}</b>"
-    doctor_html = "<br>".join(lines)
-    rows_html = ""
-    for _, r in report_df.iterrows():
-        if bool(r.get("_group", False)):
-            rows_html += f'<tr class="group"><td colspan="7"><b>{r.get("Esame richiesto", "")}</b></td></tr>'
-        else:
-            rows_html += "<tr>" + "".join([
-                f'<td class="exam">{r.get("Esame richiesto", "")}</td>',
-                f'<td>{r.get("U.M", "")}</td>',
-                f'<td>{r.get("Data 1", "")}</td>',
-                f'<td>{r.get("Data 2", "")}</td>',
-                f'<td>{r.get("Differenza", "")}</td>',
-                f'<td>{r.get("Valori di Riferimento", "")}</td>',
-                f'<td class="note">{r.get("Nota", "")}</td>',
-            ]) + "</tr>"
-    html = f"""
-    <style>
-      .sheet {{background:white; padding:28px 34px 40px 34px; border:1px solid #ddd; width:100%; max-width:1180px; color:#111; font-family:Arial, Helvetica, sans-serif;}}
-      .head {{display:grid; grid-template-columns:245px 1fr 145px; align-items:start; column-gap:16px;}}
-      .db-logo-img {{max-width:235px; max-height:155px; object-fit:contain;}}
-      .db-logo-text {{font-size:86px; font-weight:900; line-height:.72; letter-spacing:-8px; border-bottom:1px solid #8ab4ff; width:230px;}}
-      .db-logo-text span {{font-size:18px; font-weight:500; letter-spacing:0; display:block; margin-top:8px;}}
-      .doctor {{border-left:2px solid #8ab4ff; padding-left:8px; font-size:14px; line-height:1.55; color:#333;}}
-      .report-date {{font-size:14px; text-align:right; padding-top:170px;}}
-      .patient {{margin-top:18px; margin-bottom:14px; font-size:14px;}}
-      table.referto {{border-collapse:collapse; width:100%; table-layout:fixed; font-size:13px;}}
-      table.referto th, table.referto td {{border:1px solid #111; padding:2px 7px; height:18px; vertical-align:middle;}}
-      table.referto th {{font-style:italic; font-weight:400; text-align:center;}}
-      table.referto td {{text-align:center;}}
-      table.referto td.exam {{text-align:left; padding-left:55px;}}
-      table.referto tr.group td {{text-align:left; padding-left:8px; background:#f7f7f7;}}
-      table.referto td.note {{text-align:left; font-size:11px;}}
-      .c1{{width:22%;}} .c2{{width:8%;}} .c3{{width:9%;}} .c4{{width:13%;}} .c5{{width:13%;}} .c6{{width:13%;}} .c7{{width:22%;}}
-    </style>
-    <div class="sheet">
-      <div class="head">
-        <div>{logo_html}</div>
-        <div class="doctor">{doctor_html}</div>
-        <div class="report-date">{report_date}</div>
-      </div>
-      <div class="patient">Sig. {patient}</div>
-      <table class="referto">
-        <colgroup><col class="c1"><col class="c2"><col class="c3"><col class="c4"><col class="c5"><col class="c6"><col class="c7"></colgroup>
-        <thead><tr><th>Esame richiesto</th><th>U.M</th><th>Data 1</th><th>Data 2</th><th>Differenza</th><th>Valori di<br>Riferimento</th><th>Nota</th></tr></thead>
-        <tbody>{rows_html}</tbody>
-      </table>
-    </div>
-    """
-    st.components.v1.html(html, height=760, scrolling=True)
+    ext = file.name.split(".")[-1].lower()
+    mime = "image/png" if ext in ["png"] else "image/jpeg"
+    return f"data:{mime};base64," + base64.b64encode(raw).decode("ascii")
 
-st.markdown('<div class="main-title">Referto comparativo analisi ematochimiche</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub">Carica uno o più PDF/immagini: l\'app riconosce data, analiti, valori, unità, range, differenza tra due referti e genera una tabella in stile professionale.</div>', unsafe_allow_html=True)
+
+# ----------------------------
+# INTERFACCIA STREAMLIT
+# ----------------------------
+st.title("Referto comparativo analisi - layout DB")
+st.caption("Versione corretta: lettura per coordinate del PDF, non solo regex sul testo. Evita di confondere data di nascita e data referto.")
 
 with st.sidebar:
-    st.header("Intestazione")
-    patient = st.text_input("Nome paziente", "Esempio")
-    sesso = st.selectbox("Sesso biologico per range", ["ALL", "M", "F"], index=0)
-    report_date = st.text_input("Data report", datetime.today().strftime("%d/%m/%Y"))
-    logo = st.file_uploader("Logo intestazione", type=["png", "jpg", "jpeg"])
-    doctor_block = st.text_area("Dati professionista", "Dr. Danilo Bramard\nBiologo Nutrizionista\nLaurea Magistrale in Biologia applicata alle scienze della nutrizione\nIscritto all'Ordine Nazionale dei Biologi\nP.IVA: 03982150041\n☎ +393393121941 | ✉ danilo@newbodycenter.it", height=170)
-    st.divider()
-    st.caption("Per PDF scannerizzati/immagini serve OCR installato nell'ambiente Python.")
+    st.header("Dati referto")
+    patient_manual = st.text_input("Nome paziente manuale", "")
+    report_date = st.text_input("Data referto", datetime.now().strftime("%d/%m/%Y"))
+    logo_file = st.file_uploader("Logo DB", type=["png", "jpg", "jpeg"], key="logo")
+    st.info("Per Streamlit Cloud metti in requirements.txt: streamlit, pandas, pymupdf, pillow, pytesseract")
 
-files = st.file_uploader("Carica referti PDF o immagini", type=["pdf", "png", "jpg", "jpeg", "webp"], accept_multiple_files=True)
+uploads = st.file_uploader("Carica uno o più PDF testuali del laboratorio", type=["pdf", "png", "jpg", "jpeg"], accept_multiple_files=True)
 
-all_rows = []
-texts = {}
-if files:
-    for f in files:
-        text = extract_text_from_upload(f)
-        date = parse_date(text, f.name)
-        texts[f.name] = text
-        part = extract_values(text, sesso, date)
-        all_rows.append(part)
+all_dfs, texts, patient_auto = [], [], "Esempio"
+if uploads:
+    for up in uploads:
+        df, text, patient, date = process_upload(up)
+        if patient and patient != "Esempio":
+            patient_auto = patient
+        texts.append((up.name, text[:15000]))
+        if not df.empty:
+            all_dfs.append(df)
 
-if all_rows:
-    raw_df = pd.concat(all_rows, ignore_index=True) if all_rows else pd.DataFrame()
-    raw_df = add_derived(raw_df)
-    dates = sorted(raw_df["Data"].dropna().unique().tolist()) if not raw_df.empty else []
-    if len(dates) >= 2:
-        selected_dates = st.multiselect("Scegli le due date da confrontare", dates, default=[dates[0], dates[-1]], max_selections=2)
-    else:
-        selected_dates = dates
+if all_dfs:
+    full_df = pd.concat(all_dfs, ignore_index=True)
+    dates = sorted(full_df["Data"].dropna().unique().tolist(), key=lambda d: datetime.strptime(d, "%d/%m/%Y") if re.match(r"\d{2}/\d{2}/\d{4}", d) else datetime.now())
+    selected = st.multiselect("Date da confrontare", dates, default=dates[:2] if len(dates) > 1 else dates[:1])
+    report_df = build_report_table(full_df, selected)
+    patient = patient_manual.strip() or patient_auto
+    d1 = selected[0] if len(selected) > 0 else "Data 1"
+    d2 = selected[1] if len(selected) > 1 else "Data 2"
 
-    if not raw_df.empty and selected_dates:
-        comparison = build_comparison(raw_df, selected_dates)
-        visible = comparison.drop(columns=["_group"], errors="ignore")
-        st.subheader("Anteprima come il tuo schema")
-        render_like_example(comparison, patient, report_date, doctor_block, logo)
-        with st.expander("Tabella modificabile / controllo dati"):
-            st.dataframe(visible, use_container_width=True, hide_index=True)
-        st.subheader("Valori estratti")
-        st.dataframe(raw_df[["Analita", "Data", "Valore", "UM", "Valori di riferimento", "Stato", "Nota", "Riga originale"]], use_container_width=True, hide_index=True)
-        csv = visible.to_csv(index=False).encode("utf-8")
-        st.download_button("Scarica tabella CSV", csv, "referto_comparativo.csv", "text/csv")
-        try:
-            pdf_bytes = make_pdf(comparison, patient, report_date, logo, doctor_block)
-            st.download_button("Scarica PDF impaginato", pdf_bytes, "referto_comparativo.pdf", "application/pdf")
-        except Exception as e:
-            st.warning(f"PDF non generato: {e}")
-    else:
-        st.warning("Sono stati caricati file, ma non sono stati riconosciuti valori strutturati.")
+    st.subheader("Anteprima referto")
+    html = report_html(report_df, patient, report_date, data_url_from_upload(logo_file), d1, d2)
+    st.components.v1.html(html, height=760, scrolling=True)
 
+    st.download_button("Scarica CSV valori estratti", full_df.to_csv(index=False).encode("utf-8-sig"), "valori_estratti.csv", "text/csv")
+    st.download_button("Scarica HTML stampabile", html.encode("utf-8"), "referto_comparativo.html", "text/html")
+
+    st.subheader("Valori estratti")
+    st.dataframe(full_df, use_container_width=True, hide_index=True)
+    with st.expander("Tabella modificabile / controllo dati"):
+        edited = st.data_editor(full_df, use_container_width=True, num_rows="dynamic", hide_index=True)
+        if st.button("Rigenera anteprima con tabella modificata"):
+            report_df = build_report_table(edited, selected)
+            html = report_html(report_df, patient, report_date, data_url_from_upload(logo_file), d1, d2)
+            st.components.v1.html(html, height=760, scrolling=True)
     with st.expander("Testo letto dai referti"):
-        for name, text in texts.items():
-            st.markdown(f"**{name}**")
-            st.text(text[:8000] if text else "Nessun testo letto.")
+        for name, txt in texts:
+            st.markdown(f"### {name}")
+            st.text(txt)
 else:
-    st.info("Carica almeno un referto. Con due referti viene calcolata la differenza Data 2 - Data 1.")
-
-st.markdown('<div class="warn">Nota: la lettura automatica va sempre verificata sui PDF originali. I range sono indicativi e possono essere sostituiti con quelli reali del laboratorio nel file range_laboratorio.csv.</div>', unsafe_allow_html=True)
+    st.warning("Carica almeno un PDF testuale. Per scansioni/foto serve OCR, ma il risultato va sempre controllato.")
