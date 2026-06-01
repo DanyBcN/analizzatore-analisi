@@ -1,4 +1,7 @@
 streamlit
-pymupdf
 pandas
+pymupdf
 rapidfuzz
+reportlab
+pillow
+pytesseract
